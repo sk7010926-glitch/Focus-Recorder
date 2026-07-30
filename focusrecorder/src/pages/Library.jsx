@@ -32,99 +32,117 @@ function useBlobUrls(recordings) {
 }
 
 // ── Play Modal ─────────────────────────────────────────────────────────────
+// Parses "HH:MM:SS" or "MM:SS" duration strings saved by the recorder timer.
+function parseRecDuration(durStr) {
+  if (!durStr) return 0;
+  const parts = durStr.split(":").map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return 0;
+}
+
 function PlayModal({ rec, url, onClose }) {
-  // Parse "HH:MM:SS" or "MM:SS" → seconds. This is the authoritative total length
-  // because it was written by our own wall-clock timer, not the broken EBML header.
-  const parseRecDuration = (durStr) => {
-    if (!durStr) return 0;
-    const parts = durStr.split(":").map(Number);
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return 0;
-  };
+  const videoRef       = useRef(null);
+  const progressBarRef = useRef(null);   // the track div
+  const fillRef        = useRef(null);   // the colored fill div
+  const thumbRef       = useRef(null);   // the thumb dot
+  const rafRef         = useRef(null);   // requestAnimationFrame id
+  const isDraggingRef  = useRef(false);
 
-  const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  // Initialise directly from rec.duration so the bar range is correct immediately —
-  // no waiting for video events that may reflect the wrong EBML metadata duration.
-  const [duration, setDuration] = useState(() => parseRecDuration(rec.duration));
-  const isDraggingRef = useRef(false);
-  const progressBarRef = useRef(null);
+  const [currentTime, setCurrentTime] = useState(0);  // only for the time label
+  const [duration]   = useState(() => parseRecDuration(rec.duration));
 
-  // Close on Escape key
+  // ── RAF loop: update fill width directly on the DOM, no React re-renders ──
+  // This is the fix for the frozen bar: React's onTimeUpdate batching and
+  // scheduling can delay or drop state updates. Direct DOM writes via RAF
+  // are guaranteed to run every frame in sync with the browser's paint cycle.
+  useEffect(() => {
+    const vid  = videoRef.current;
+    const fill = fillRef.current;
+    const thumb = thumbRef.current;
+    if (!vid || !fill || !duration) return;
+
+    let lastLabelUpdate = 0;
+
+    function tick() {
+      rafRef.current = requestAnimationFrame(tick);
+      if (isDraggingRef.current) return;
+
+      const ct  = vid.currentTime;
+      const pct = Math.min(100, (ct / duration) * 100);
+
+      // Update bar width directly — zero React overhead, always in sync with video
+      fill.style.width  = pct + "%";
+      thumb.style.left  = pct + "%";
+
+      // Update the time label text at most 4 times per second to avoid layout thrash
+      const now = performance.now();
+      if (now - lastLabelUpdate > 250) {
+        lastLabelUpdate = now;
+        setCurrentTime(ct);
+      }
+    }
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [duration]); // only re-run if duration changes (it won't after mount)
+
+  // ── Keyboard close ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // syncDuration: called by video events. Duration state is pre-initialized from
-  // rec.duration (our wall-clock timer) on mount. Only update if a video API returns
-  // something larger — this guards against the broken 1-2s EBML header overwriting it.
-  const syncDuration = (vid) => {
-    if (!vid) return;
-    let d = 0;
-    if (vid.buffered && vid.buffered.length > 0) d = vid.buffered.end(0);
-    if (!d && isFinite(vid.duration) && vid.duration > 0) d = vid.duration;
-    setDuration((prev) => (d > prev + 0.5 ? d : prev));
-  };
-
-  const handleTimeUpdate = () => {
-    const vid = videoRef.current;
-    if (!vid || isDraggingRef.current) return;
-    setCurrentTime(vid.currentTime);
-    syncDuration(vid);
-  };
-
-  const handleLoadedMetadata = () => syncDuration(videoRef.current);
-  const handleProgress = () => syncDuration(videoRef.current);
-  const handleCanPlay = () => syncDuration(videoRef.current);
-
+  // ── Play/pause toggle ────────────────────────────────────────────────────
   const togglePlay = () => {
     const vid = videoRef.current;
     if (!vid) return;
     if (vid.paused) { vid.play(); setIsPlaying(true); }
-    else { vid.pause(); setIsPlaying(false); }
+    else            { vid.pause(); setIsPlaying(false); }
   };
 
-  // Compute seek position from a pointer event on the progress bar
+  // ── Seek: compute time from pointer position and set video.currentTime ───
   const seekFromEvent = (e) => {
     const bar = progressBarRef.current;
     const vid = videoRef.current;
+    const fill = fillRef.current;
+    const thumb = thumbRef.current;
     if (!bar || !vid || !duration) return;
-    const rect = bar.getBoundingClientRect();
+    const rect   = bar.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const ratio  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     const newTime = ratio * duration;
     vid.currentTime = newTime;
     setCurrentTime(newTime);
+    // Immediately update DOM so the bar doesn't lag during drag
+    const pct = ratio * 100;
+    if (fill)  fill.style.width = pct + "%";
+    if (thumb) thumb.style.left = pct + "%";
   };
 
   const handleBarPointerDown = (e) => {
     e.preventDefault();
     isDraggingRef.current = true;
     seekFromEvent(e);
-
     const onMove = (ev) => { if (isDraggingRef.current) seekFromEvent(ev); };
-    const onUp = (ev) => {
+    const onUp   = (ev) => {
       isDraggingRef.current = false;
       seekFromEvent(ev);
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointerup",   onUp);
     };
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointerup",   onUp);
   };
 
-  const formatTime = (s) => {
-    const safe = isFinite(s) ? s : 0;
-    const m = Math.floor(safe / 60).toString().padStart(2, "0");
+  const fmt = (s) => {
+    const safe = isFinite(s) && s >= 0 ? s : 0;
+    const m   = Math.floor(safe / 60).toString().padStart(2, "0");
     const sec = Math.floor(safe % 60).toString().padStart(2, "0");
     return `${m}:${sec}`;
   };
-
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
     <div className="play-modal-backdrop" onClick={onClose}>
@@ -138,36 +156,25 @@ function PlayModal({ rec, url, onClose }) {
           className="play-modal-video"
           src={url}
           autoPlay
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
-          onEnded={() => setIsPlaying(false)}
-          onTimeUpdate={handleTimeUpdate}
-          onLoadedMetadata={handleLoadedMetadata}
-          onProgress={handleProgress}
-          onCanPlay={handleCanPlay}
+          onPlay={()  => setIsPlaying(true)}
+          onPause={()  => setIsPlaying(false)}
+          onEnded={()  => setIsPlaying(false)}
         />
-        {/* ── Custom seek bar ── */}
+        {/* ── Seek bar ── */}
         <div className="play-modal-controls">
           <button className="play-modal-playbtn" onClick={togglePlay}>
             {isPlaying ? "⏸" : "▶"}
           </button>
-          <span className="play-modal-timetext">{formatTime(currentTime)}</span>
-          {/* Progress bar — driven by currentTime/seekable, NOT by broken EBML duration */}
+          <span className="play-modal-timetext">{fmt(currentTime)}</span>
           <div
             ref={progressBarRef}
             className="play-modal-progress"
             onPointerDown={handleBarPointerDown}
           >
-            <div
-              className="play-modal-progress-fill"
-              style={{ width: `${progress}%` }}
-            />
-            <div
-              className="play-modal-progress-thumb"
-              style={{ left: `${progress}%` }}
-            />
+            <div ref={fillRef}  className="play-modal-progress-fill"  style={{ width: "0%" }} />
+            <div ref={thumbRef} className="play-modal-progress-thumb" style={{ left:  "0%" }} />
           </div>
-          <span className="play-modal-timetext">{formatTime(duration)}</span>
+          <span className="play-modal-timetext">{fmt(duration)}</span>
         </div>
         <div className="play-modal-meta">
           <span>⏱ {rec.duration}</span>

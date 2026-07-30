@@ -430,7 +430,7 @@
   background: linear-gradient(90deg, #7c3aed, #a855f7);
   border-radius: 999px;
   pointer-events: none;
-  transition: width 0.05s linear;
+  transition: none;
 }
 
 /* Draggable thumb dot */
