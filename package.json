@@ -1,0 +1,11 @@
+{
+  "name": "focusrecorder-root",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "cd focusrecorder && npm run dev",
+    "build": "cd focusrecorder && npm run build",
+    "preview": "cd focusrecorder && npm run preview"
+  }
+}
