@@ -33,10 +33,22 @@ function useBlobUrls(recordings) {
 
 // ── Play Modal ─────────────────────────────────────────────────────────────
 function PlayModal({ rec, url, onClose }) {
+  // Parse "HH:MM:SS" or "MM:SS" → seconds. This is the authoritative total length
+  // because it was written by our own wall-clock timer, not the broken EBML header.
+  const parseRecDuration = (durStr) => {
+    if (!durStr) return 0;
+    const parts = durStr.split(":").map(Number);
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return 0;
+  };
+
   const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  // Initialise directly from rec.duration so the bar range is correct immediately —
+  // no waiting for video events that may reflect the wrong EBML metadata duration.
+  const [duration, setDuration] = useState(() => parseRecDuration(rec.duration));
   const isDraggingRef = useRef(false);
   const progressBarRef = useRef(null);
 
@@ -47,23 +59,15 @@ function PlayModal({ rec, url, onClose }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // ROOT CAUSE FIX:
-  // Chrome MediaRecorder writes the wrong EBML Duration (1-2s) in WebM metadata.
-  // video.duration is therefore 1-2s even for 30s recordings.
-  // The native <video controls> seekbar uses video.duration for its range → appears frozen.
-  // We use seekable.end(0) or buffered.end(0) as the true playable length since those
-  // ranges are computed from actual cluster timestamps, not the broken EBML header.
-  const getTrueDuration = (vid) => {
-    if (!vid) return 0;
-    if (vid.seekable && vid.seekable.length > 0) return vid.seekable.end(0);
-    if (vid.buffered && vid.buffered.length > 0) return vid.buffered.end(0);
-    if (isFinite(vid.duration) && vid.duration > 0) return vid.duration;
-    return 0;
-  };
-
+  // syncDuration: called by video events. Duration state is pre-initialized from
+  // rec.duration (our wall-clock timer) on mount. Only update if a video API returns
+  // something larger — this guards against the broken 1-2s EBML header overwriting it.
   const syncDuration = (vid) => {
-    const d = getTrueDuration(vid);
-    if (d > 0) setDuration(d);
+    if (!vid) return;
+    let d = 0;
+    if (vid.buffered && vid.buffered.length > 0) d = vid.buffered.end(0);
+    if (!d && isFinite(vid.duration) && vid.duration > 0) d = vid.duration;
+    setDuration((prev) => (d > prev + 0.5 ? d : prev));
   };
 
   const handleTimeUpdate = () => {
