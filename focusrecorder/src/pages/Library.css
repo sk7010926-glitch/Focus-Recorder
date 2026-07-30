@@ -366,3 +366,85 @@
   border-top: 1px solid rgba(255, 255, 255, 0.05);
   flex-wrap: wrap;
 }
+
+/* ── Custom player controls ── */
+.play-modal-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1.25rem;
+  background: rgba(0, 0, 0, 0.35);
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.play-modal-playbtn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(168, 85, 247, 0.18);
+  border: 1px solid rgba(168, 85, 247, 0.35);
+  color: #a855f7;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+.play-modal-playbtn:hover {
+  background: rgba(168, 85, 247, 0.32);
+}
+
+.play-modal-timetext {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: #9ca3af;
+  min-width: 3.4ch;
+}
+
+/* The track that the user clicks / drags */
+.play-modal-progress {
+  flex: 1;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  position: relative;
+  cursor: pointer;
+  touch-action: none;          /* enables pointermove on touch devices */
+  user-select: none;
+}
+.play-modal-progress:hover {
+  height: 7px;                 /* slightly taller on hover for easier grabbing */
+  margin-block: -1px;          /* keep vertical alignment */
+}
+
+/* Filled portion */
+.play-modal-progress-fill {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  background: linear-gradient(90deg, #7c3aed, #a855f7);
+  border-radius: 999px;
+  pointer-events: none;
+  transition: width 0.05s linear;
+}
+
+/* Draggable thumb dot */
+.play-modal-progress-thumb {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  background: #fff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.5);
+  transition: opacity 0.15s ease;
+}
+.play-modal-progress:hover .play-modal-progress-thumb {
+  opacity: 1;
+}

@@ -33,12 +33,94 @@ function useBlobUrls(recordings) {
 
 // ── Play Modal ─────────────────────────────────────────────────────────────
 function PlayModal({ rec, url, onClose }) {
-  // Close on backdrop click or Escape key
+  const videoRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const isDraggingRef = useRef(false);
+  const progressBarRef = useRef(null);
+
+  // Close on Escape key
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // ROOT CAUSE FIX:
+  // Chrome MediaRecorder writes the wrong EBML Duration (1-2s) in WebM metadata.
+  // video.duration is therefore 1-2s even for 30s recordings.
+  // The native <video controls> seekbar uses video.duration for its range → appears frozen.
+  // We use seekable.end(0) or buffered.end(0) as the true playable length since those
+  // ranges are computed from actual cluster timestamps, not the broken EBML header.
+  const getTrueDuration = (vid) => {
+    if (!vid) return 0;
+    if (vid.seekable && vid.seekable.length > 0) return vid.seekable.end(0);
+    if (vid.buffered && vid.buffered.length > 0) return vid.buffered.end(0);
+    if (isFinite(vid.duration) && vid.duration > 0) return vid.duration;
+    return 0;
+  };
+
+  const syncDuration = (vid) => {
+    const d = getTrueDuration(vid);
+    if (d > 0) setDuration(d);
+  };
+
+  const handleTimeUpdate = () => {
+    const vid = videoRef.current;
+    if (!vid || isDraggingRef.current) return;
+    setCurrentTime(vid.currentTime);
+    syncDuration(vid);
+  };
+
+  const handleLoadedMetadata = () => syncDuration(videoRef.current);
+  const handleProgress = () => syncDuration(videoRef.current);
+  const handleCanPlay = () => syncDuration(videoRef.current);
+
+  const togglePlay = () => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    if (vid.paused) { vid.play(); setIsPlaying(true); }
+    else { vid.pause(); setIsPlaying(false); }
+  };
+
+  // Compute seek position from a pointer event on the progress bar
+  const seekFromEvent = (e) => {
+    const bar = progressBarRef.current;
+    const vid = videoRef.current;
+    if (!bar || !vid || !duration) return;
+    const rect = bar.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const newTime = ratio * duration;
+    vid.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  const handleBarPointerDown = (e) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    seekFromEvent(e);
+
+    const onMove = (ev) => { if (isDraggingRef.current) seekFromEvent(ev); };
+    const onUp = (ev) => {
+      isDraggingRef.current = false;
+      seekFromEvent(ev);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const formatTime = (s) => {
+    const safe = isFinite(s) ? s : 0;
+    const m = Math.floor(safe / 60).toString().padStart(2, "0");
+    const sec = Math.floor(safe % 60).toString().padStart(2, "0");
+    return `${m}:${sec}`;
+  };
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
     <div className="play-modal-backdrop" onClick={onClose}>
@@ -48,11 +130,41 @@ function PlayModal({ rec, url, onClose }) {
           <button className="play-modal-close" onClick={onClose}>✕</button>
         </div>
         <video
+          ref={videoRef}
           className="play-modal-video"
           src={url}
-          controls
           autoPlay
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onEnded={() => setIsPlaying(false)}
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onProgress={handleProgress}
+          onCanPlay={handleCanPlay}
         />
+        {/* ── Custom seek bar ── */}
+        <div className="play-modal-controls">
+          <button className="play-modal-playbtn" onClick={togglePlay}>
+            {isPlaying ? "⏸" : "▶"}
+          </button>
+          <span className="play-modal-timetext">{formatTime(currentTime)}</span>
+          {/* Progress bar — driven by currentTime/seekable, NOT by broken EBML duration */}
+          <div
+            ref={progressBarRef}
+            className="play-modal-progress"
+            onPointerDown={handleBarPointerDown}
+          >
+            <div
+              className="play-modal-progress-fill"
+              style={{ width: `${progress}%` }}
+            />
+            <div
+              className="play-modal-progress-thumb"
+              style={{ left: `${progress}%` }}
+            />
+          </div>
+          <span className="play-modal-timetext">{formatTime(duration)}</span>
+        </div>
         <div className="play-modal-meta">
           <span>⏱ {rec.duration}</span>
           <span>📅 {rec.date}</span>
