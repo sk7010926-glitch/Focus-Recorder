@@ -57,6 +57,159 @@ function getBestMimeType(hasAudio = true) {
  *
  * Duration stored in file = durationMs (when timecodeScale = 1,000,000 ns = 1ms/tick).
  */
+function getWebmDurationFromClusters(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+
+  // Reads EBML variable-length integer (VINT) for SIZE fields — strips marker bit
+  function readVint(offset) {
+    if (offset >= bytes.length) return null;
+    const first = bytes[offset];
+    if (first === 0) return null; // invalid
+    let mask = 0x80;
+    let length = 1;
+    while (mask > 0 && (first & mask) === 0) {
+      mask >>= 1;
+      length++;
+    }
+    if (length > 8 || offset + length > bytes.length) return null;
+    // Check for unknown-size sentinel (all data bits are 1)
+    let isUnknown = (first & (mask - 1)) === (mask - 1);
+    for (let i = 1; i < length && isUnknown; i++) {
+      if (bytes[offset + i] !== 0xFF) isUnknown = false;
+    }
+    let value = first & (mask - 1);
+    for (let i = 1; i < length; i++) {
+      value = (value * 256) + bytes[offset + i];
+    }
+    return { value, length, isUnknown };
+  }
+
+  // Reads EBML Element ID — keeps marker bit (EBML IDs include their marker bits)
+  function readId(offset) {
+    if (offset >= bytes.length) return null;
+    const first = bytes[offset];
+    if (first === 0) return null;
+    let mask = 0x80;
+    let length = 1;
+    while (mask > 0 && (first & mask) === 0) {
+      mask >>= 1;
+      length++;
+    }
+    if (length > 8 || offset + length > bytes.length) return null;
+    let id = 0;
+    for (let i = 0; i < length; i++) {
+      id = (id * 256) + bytes[offset + i];
+    }
+    return { id, length };
+  }
+
+  let offset = 0;
+  let lastTimecode = 0;
+  let lastBlockOffset = 0;
+
+  // 1. Parse EBML Header
+  const headerId = readId(offset);
+  if (!headerId) return 0;
+  offset += headerId.length;
+  const headerSize = readVint(offset);
+  if (!headerSize) return 0;
+  offset += headerSize.length + headerSize.value;
+
+  // 2. Parse Segment
+  const segmentId = readId(offset);
+  if (!segmentId || segmentId.id !== 0x18538067) return 0;
+  offset += segmentId.length;
+  const segmentSize = readVint(offset);
+  if (!segmentSize) return 0;
+  offset += segmentSize.length;
+
+  const segmentEnd = segmentSize.isUnknown ? bytes.length : Math.min(offset + segmentSize.value, bytes.length);
+
+  let lastClusterOffset = -1;
+  let lastClusterSize = 0;
+
+  // 3. Scan inside Segment for Clusters
+  while (offset < segmentEnd && offset < bytes.length - 4) {
+    const idInfo = readId(offset);
+    if (!idInfo) break;
+    offset += idInfo.length;
+    const sizeInfo = readVint(offset);
+    if (!sizeInfo) break;
+    offset += sizeInfo.length;
+
+    // Cluster ID: 0x1F43B675
+    if (idInfo.id === 0x1F43B675) {
+      lastClusterOffset = offset;
+      lastClusterSize = sizeInfo.value;
+    }
+
+    if (sizeInfo.isUnknown) break;
+    offset += sizeInfo.value;
+  }
+
+  // 4. Parse only the last Cluster content to find Timecode and max Block offset
+  if (lastClusterOffset !== -1) {
+    let clusterOffset = lastClusterOffset;
+    const clusterEnd = Math.min(clusterOffset + lastClusterSize, bytes.length);
+
+    while (clusterOffset < clusterEnd && clusterOffset < bytes.length - 4) {
+      const itemId = readId(clusterOffset);
+      if (!itemId) break;
+      clusterOffset += itemId.length;
+      const itemSize = readVint(clusterOffset);
+      if (!itemSize) break;
+      clusterOffset += itemSize.length;
+
+      // Timecode ID: 0xE7
+      if (itemId.id === 0xE7) {
+        let tc = 0;
+        for (let k = 0; k < itemSize.value; k++) {
+          tc = (tc * 256) + bytes[clusterOffset + k];
+        }
+        lastTimecode = tc;
+      }
+      // SimpleBlock ID: 0xA3
+      else if (itemId.id === 0xA3) {
+        const trackVal = readVint(clusterOffset);
+        if (trackVal) {
+          const timeOffsetStart = clusterOffset + trackVal.length;
+          const timeOffset = (bytes[timeOffsetStart] << 8) | bytes[timeOffsetStart + 1];
+          const signedTimeOffset = (timeOffset << 16) >> 16;
+          lastBlockOffset = Math.max(lastBlockOffset, signedTimeOffset);
+        }
+      }
+      // BlockGroup ID: 0xA0
+      else if (itemId.id === 0xA0) {
+        const bgEnd = clusterOffset + itemSize.value;
+        let bgOffset = clusterOffset;
+        while (bgOffset < bgEnd) {
+          const bgItemId = readId(bgOffset);
+          if (!bgItemId) break;
+          bgOffset += bgItemId.length;
+          const bgItemSize = readVint(bgOffset);
+          if (!bgItemSize) break;
+          bgOffset += bgItemSize.length;
+
+          if (bgItemId.id === 0xA1) { // Block
+            const trackVal = readVint(bgOffset);
+            if (trackVal) {
+              const timeOffsetStart = bgOffset + trackVal.length;
+              const timeOffset = (bytes[timeOffsetStart] << 8) | bytes[timeOffsetStart + 1];
+              const signedTimeOffset = (timeOffset << 16) >> 16;
+              lastBlockOffset = Math.max(lastBlockOffset, signedTimeOffset);
+            }
+          }
+          bgOffset += bgItemSize.value;
+        }
+      }
+
+      clusterOffset += itemSize.value;
+    }
+  }
+
+  return lastTimecode + lastBlockOffset;
+}
+
 function setWebmDuration(arrayBuffer, durationMs) {
   const bytes = new Uint8Array(arrayBuffer);
   const dataView = new DataView(arrayBuffer);
@@ -104,6 +257,18 @@ function setWebmDuration(arrayBuffer, durationMs) {
     return { id, length };
   }
 
+  function writeVint(buffer, offset, value, length) {
+    let mask = 0x80;
+    for (let i = 1; i < length; i++) {
+      mask >>= 1;
+    }
+    let val = value;
+    buffer[offset] = mask | (val >> ((length - 1) * 8));
+    for (let i = 1; i < length; i++) {
+      buffer[offset + i] = (val >> ((length - 1 - i) * 8)) & 0xFF;
+    }
+  }
+
   let offset = 0;
   let timecodeScale = 1000000; // default: 1ms/tick (Chrome always uses this)
   let durationOffset = -1;
@@ -111,11 +276,12 @@ function setWebmDuration(arrayBuffer, durationMs) {
   // Track byte range of the Info block for potential Duration injection
   let infoBlockStart = -1;  // byte offset of the Info element ID
   let infoBlockEnd = -1;    // byte offset just after Info element's content
+  let infoSizeLength = 0;
+  let infoSizeValue = 0;
 
   while (offset < bytes.length - 4) {
     const idInfo = readId(offset);
     if (!idInfo) break;
-    const idStart = offset;
     offset += idInfo.length;
     const sizeInfo = readVint(offset);
     if (!sizeInfo) break;
@@ -138,6 +304,8 @@ function setWebmDuration(arrayBuffer, durationMs) {
         // Info ID: 0x1549A966
         if (segIdInfo.id === 0x1549A966) {
           infoBlockStart = segIdStart;
+          infoSizeLength = segSizeInfo.length;
+          infoSizeValue = segSizeInfo.value;
           const infoContentStart = offset;
           const infoEnd = segSizeInfo.isUnknown
             ? bytes.length
@@ -171,7 +339,6 @@ function setWebmDuration(arrayBuffer, durationMs) {
           break;
         } else {
           // Skip non-Info segment children (Cluster, Tracks, etc.)
-          // For unknown-size elements inside Segment, we cannot skip — stop
           if (segSizeInfo.isUnknown) break;
           offset += segSizeInfo.value;
         }
@@ -200,30 +367,36 @@ function setWebmDuration(arrayBuffer, durationMs) {
     return new Blob([bytes], { type: "video/webm" });
   }
 
-  // ── Case B: Duration element is missing — inject it into the Info block
-  // We insert an 8-byte float64 Duration element (ID: 0x44 0x89, size: 0x88, value: float64)
-  // right at the end of Info's content (before the next Segment child begins)
+  // ── Case B: Duration element is missing — inject it into the Info block and update parent size
   if (infoBlockStart !== -1) {
-    // Duration EBML element: 2-byte ID (0x4489) + 1-byte size (0x88 = VINT for 8) + 8-byte float64
-    const DURATION_ELEMENT_SIZE = 11; // 2 + 1 + 8
+    const DURATION_ELEMENT_SIZE = 11; // 2-byte ID (0x4489) + 1-byte size (0x88 = VINT for 8) + 8-byte float64
     const newBuffer = new Uint8Array(bytes.length + DURATION_ELEMENT_SIZE);
+    
     // Copy everything up to the end of Info content
     newBuffer.set(bytes.slice(0, infoBlockEnd), 0);
+    
     // Write the Duration element
     let ins = infoBlockEnd;
     newBuffer[ins++] = 0x44; // Duration ID high byte
     newBuffer[ins++] = 0x89; // Duration ID low byte  (0x4489)
-    newBuffer[ins++] = 0x88; // VINT size: 0x88 = 1-byte VINT for value 8
+    newBuffer[ins++] = 0x88; // VINT size: 0x88 = VINT size for 8
+    
     // Write float64 big-endian
     const tmp = new DataView(newBuffer.buffer);
     tmp.setFloat64(ins, durationValue, false);
     ins += 8;
+    
     // Copy remainder of original file
     newBuffer.set(bytes.slice(infoBlockEnd), ins);
+    
+    // Update the size of the Info container in the new buffer
+    // Info ID starts at infoBlockStart. The size VINT starts at infoBlockStart + 4 (Info ID is 4 bytes).
+    writeVint(newBuffer, infoBlockStart + 4, infoSizeValue + DURATION_ELEMENT_SIZE, infoSizeLength);
+    
     return new Blob([newBuffer], { type: "video/webm" });
   }
 
-  return null; // Could not locate EBML structure — caller will use npm fallback
+  return null; // Could not locate EBML structure or duration element — caller will use npm fallback
 }
 
 async function fixDuration(blob, durationMs) {
@@ -843,13 +1016,13 @@ export function useRecorder() {
           // NOT Date.now() here — onstop fires asynchronously after a variable delay.
           const stopTime = recordingStopTimeRef.current || Date.now();
           const wallClockMs = Math.max(0, stopTime - startTime);
-          // accumulatedMsRef is populated by stopTimer() (called before recorder.stop()).
-          // Cross-validate with wallClockMs: if both are available, use the larger value to
-          // avoid under-reporting due to timer drift. Use wallClockMs as the primary fallback.
-          const durationMs = accumulatedMsRef.current > 100
-            ? Math.max(accumulatedMsRef.current, wallClockMs > 0 ? wallClockMs : 0)
-            : Math.max(1000, wallClockMs);
+
           const rawBlob = new Blob(chunksRef.current, { type: mimeType || "video/webm" });
+          const arrayBuffer = await rawBlob.arrayBuffer();
+
+          // Extract the real duration stored in the recorded video's EBML clusters
+          const realDurationMs = getWebmDurationFromClusters(arrayBuffer);
+          const durationMs = realDurationMs > 0 ? realDurationMs : wallClockMs;
 
           console.log(`[FocusRecorder] Total Chunks: ${chunksRef.current.length}, Raw Size: ${formatBytes(rawBlob.size)}, Exact Duration: ${durationMs}ms`);
 
