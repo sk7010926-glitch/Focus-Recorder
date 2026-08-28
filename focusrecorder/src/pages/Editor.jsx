@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { getRecording } from "../services/db";
 import "./Editor.css";
@@ -15,7 +15,7 @@ function Editor() {
   const [error, setError] = useState(null);
 
   const [playhead, setPlayhead] = useState(0);
-  const [duration, setDuration] = useState(0.1);
+  const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [selected, setSelected] = useState(null);
@@ -23,6 +23,7 @@ function Editor() {
   const [playbackSpeed, setPlaybackSpeed] = useState("1x");
 
   const videoRef = useRef(null);
+  const rafRef = useRef(null);
 
   // 1. Fetch recording details from IndexedDB
   useEffect(() => {
@@ -151,10 +152,53 @@ function Editor() {
     setPlayhead(newTime);
   };
 
+  // ── requestAnimationFrame loop for smooth playhead sync ──
+  const syncPlayhead = useCallback(() => {
+    if (videoRef.current) {
+      setPlayhead(videoRef.current.currentTime);
+    }
+    rafRef.current = requestAnimationFrame(syncPlayhead);
+  }, []);
+
+  const startRaf = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(syncPlayhead);
+  }, [syncPlayhead]);
+
+  const stopRaf = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  }, []);
+
+  // Cancel rAF on unmount
+  useEffect(() => {
+    return () => stopRaf();
+  }, [stopRaf]);
+
   // Video Event Handlers
-  const handlePlay = () => setIsPlaying(true);
-  const handlePause = () => setIsPlaying(false);
+  const handlePlay = () => {
+    setIsPlaying(true);
+    startRaf();
+  };
+  const handlePause = () => {
+    setIsPlaying(false);
+    stopRaf();
+    // Sync once on pause to capture exact position
+    if (videoRef.current) {
+      setPlayhead(videoRef.current.currentTime);
+    }
+  };
+  // onTimeUpdate kept as a fallback for browsers that throttle rAF in background
   const handleTimeUpdate = () => {
+    if (videoRef.current && !rafRef.current) {
+      setPlayhead(videoRef.current.currentTime);
+    }
+  };
+  const handleVideoEnded = () => {
+    setIsPlaying(false);
+    stopRaf();
     if (videoRef.current) {
       setPlayhead(videoRef.current.currentTime);
     }
@@ -162,7 +206,9 @@ function Editor() {
   const handleLoadedMetadata = () => {
     const vid = videoRef.current;
     if (vid) {
-      const vidDuration = vid.duration || 0.1;
+      // Guard against NaN/Infinity (can happen with some codecs before fully decoded)
+      const raw = vid.duration;
+      const vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
       setDuration(vidDuration);
       setPlayhead(vid.currentTime);
       setClips([
@@ -249,7 +295,11 @@ function Editor() {
                 onPause={handlePause}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
-                onDurationChange={(e) => setDuration(e.target.duration || 0.1)}
+                onDurationChange={(e) => {
+                  const raw = e.target.duration;
+                  if (isFinite(raw) && raw > 0) setDuration(raw);
+                }}
+                onEnded={handleVideoEnded}
               />
             ) : (
               <div className="preview-inner">
@@ -303,7 +353,7 @@ function Editor() {
                     width: `${((clip.end - clip.start) / duration) * 100}%`,
                     background: clip.color,
                   }}
-                  onClick={(e) => { e.stopPropagation(); setSelected(clip.id); }}
+                  onClick={(e) => { handleTrackClick(e); setSelected(clip.id); }}
                 >
                   <span className="clip-label">{clip.label}</span>
                 </div>
@@ -312,20 +362,28 @@ function Editor() {
               {/* Playhead */}
               <div
                 className="playhead"
-                style={{ left: `${(playhead / duration) * 100}%` }}
+                style={{ left: `${duration > 0 ? (playhead / duration) * 100 : 0}%` }}
               >
                 <div className="playhead-line" />
                 <div className="playhead-head" />
               </div>
             </div>
 
-            {/* Time ruler */}
+            {/* Time ruler — dynamic marks based on actual duration */}
             <div className="time-ruler">
-              {Array.from({ length: 9 }, (_, i) => (
-                <span key={i} style={{ left: `${(i / 8) * 100}%` }}>
-                  {formatTime((i / 8) * duration)}
-                </span>
-              ))}
+              {duration > 0
+                ? Array.from({ length: 9 }, (_, i) => (
+                    <span key={i} style={{ left: `${(i / 8) * 100}%` }}>
+                      {formatTime((i / 8) * duration)}
+                    </span>
+                  ))
+                : (
+                    <>
+                      <span style={{ left: "0%" }}>00:00</span>
+                      <span style={{ left: "100%" }}>--:--</span>
+                    </>
+                  )
+              }
             </div>
           </div>
         </div>
