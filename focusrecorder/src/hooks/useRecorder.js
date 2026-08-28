@@ -1020,9 +1020,19 @@ export function useRecorder() {
           const rawBlob = new Blob(chunksRef.current, { type: mimeType || "video/webm" });
           const arrayBuffer = await rawBlob.arrayBuffer();
 
-          // Extract the real duration stored in the recorded video's EBML clusters
+          // PRIMARY: The active recording timer — accumulated only during active recording,
+          // pause-aware, finalized by stopTimer() before onstop fires.
+          const activeRecordingMs = accumulatedMsRef.current;
+
+          // FALLBACK: WebM cluster analysis (may be inaccurate for Chrome recordings)
           const realDurationMs = getWebmDurationFromClusters(arrayBuffer);
-          const durationMs = realDurationMs > 0 ? realDurationMs : wallClockMs;
+
+          // Priority: active timer > WebM clusters > wall clock (wall clock includes pauses)
+          const durationMs = activeRecordingMs > 0
+            ? activeRecordingMs
+            : realDurationMs > 0
+              ? realDurationMs
+              : wallClockMs;
 
           console.log(`[FocusRecorder] Total Chunks: ${chunksRef.current.length}, Raw Size: ${formatBytes(rawBlob.size)}, Exact Duration: ${durationMs}ms`);
 

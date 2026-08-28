@@ -78,3 +78,14 @@ export async function updateRecording(id, changes) {
     getReq.onerror = (e) => reject(e.target.error);
   });
 }
+
+/** Fetch a single recording by id. */
+export async function getRecording(id) {
+  const db    = await openDB();
+  const store = db.transaction(STORE, "readonly").objectStore(STORE);
+  return new Promise((resolve, reject) => {
+    const req = store.get(id);
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror   = (e) => reject(e.target.error);
+  });
+}

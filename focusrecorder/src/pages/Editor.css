@@ -38,6 +38,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  position: relative;
 }
 
 .preview-inner {
@@ -310,6 +312,98 @@
 }
 @media (max-width: 640px) {
   .editor-page { padding: 1.5rem 1.25rem; }
-  .playback-bar { flex-wrap: wrap; }
+.playback-bar { flex-wrap: wrap; }
   .volume-control { margin-left: 0; }
 }
+
+/* ── Real Video Player & States ── */
+.editor-preview video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #080810;
+  outline: none;
+  display: block;
+}
+
+.editor-loading,
+.editor-error,
+.editor-no-selection {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 1rem;
+  color: #9ca3af;
+  padding: 3rem 2rem;
+  background: #080810;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.07);
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  box-sizing: border-box;
+}
+
+.editor-loading span,
+.editor-error span,
+.editor-no-selection span {
+  font-size: 3rem;
+  animation: editor-float 3s ease-in-out infinite;
+}
+
+.editor-loading p,
+.editor-error p,
+.editor-no-selection p {
+  font-size: 0.95rem;
+  color: #6b7280;
+  max-width: 400px;
+  margin: 0;
+}
+
+.editor-error h3,
+.editor-no-selection h3 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin: 0;
+}
+
+.editor-loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(168, 85, 247, 0.1);
+  border-top-color: #a855f7;
+  border-radius: 50%;
+  animation: editor-spin 1s linear infinite;
+}
+
+.editor-btn-secondary {
+  padding: 0.55rem 1.1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f1f5f9;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-top: 0.5rem;
+}
+
+.editor-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+@keyframes editor-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes editor-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+

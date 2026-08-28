@@ -48,35 +48,54 @@ function PlayModal({ rec, url, onClose }) {
   const thumbRef       = useRef(null);   // the thumb dot
   const rafRef         = useRef(null);   // requestAnimationFrame id
   const isDraggingRef  = useRef(false);
+  // Tracks whether the video has reached the ended state.
+  // While true, the RAF loop skips writing to the bar so it stays frozen at 100%.
+  // Cleared when the user seeks or explicitly presses Play after ended.
+  const isEndedRef     = useRef(false);
+  // Stores the resolved duration in seconds — updated from video.duration on loadedmetadata
+  const durationRef    = useRef(parseRecDuration(rec.duration));
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);  // only for the time label
-  const [duration]   = useState(() => parseRecDuration(rec.duration));
+  // Duration label state — initialized from stored string, updated once video metadata loads
+  const [duration, setDuration] = useState(() => parseRecDuration(rec.duration));
+
+  // Keep durationRef in sync with state so RAF / seek closures always see latest value
+  useEffect(() => { durationRef.current = duration; }, [duration]);
 
   // ── RAF loop: update fill width directly on the DOM, no React re-renders ──
-  // This is the fix for the frozen bar: React's onTimeUpdate batching and
-  // scheduling can delay or drop state updates. Direct DOM writes via RAF
-  // are guaranteed to run every frame in sync with the browser's paint cycle.
+  // Always reads vid.currentTime and vid.duration live — video element is sole source of truth.
   useEffect(() => {
     const vid  = videoRef.current;
     const fill = fillRef.current;
     const thumb = thumbRef.current;
-    if (!vid || !fill || !duration) return;
+    if (!vid || !fill || !thumb) return;
 
     let lastLabelUpdate = 0;
 
     function tick() {
       rafRef.current = requestAnimationFrame(tick);
+      // While dragging, seekFromEvent handles DOM updates synchronously — skip RAF writes.
       if (isDraggingRef.current) return;
+      // While ended, the bar is frozen at 100% by the onEnded handler — skip RAF writes
+      // so a browser-internal currentTime reset (Chrome resets to 0 on some codecs) can't
+      // overwrite the 100% position before the user interacts again.
+      if (isEndedRef.current) return;
+
+      // Prefer the live video element duration; fall back to stored value
+      const effectiveDuration = (isFinite(vid.duration) && vid.duration > 0)
+        ? vid.duration
+        : durationRef.current;
+      if (!effectiveDuration) return;
 
       const ct  = vid.currentTime;
-      const pct = Math.min(100, (ct / duration) * 100);
+      const pct = Math.min(100, Math.max(0, (ct / effectiveDuration) * 100));
 
       // Update bar width directly — zero React overhead, always in sync with video
       fill.style.width  = pct + "%";
       thumb.style.left  = pct + "%";
 
-      // Update the time label text at most 4 times per second to avoid layout thrash
+      // Update the time label at most 4 times per second to avoid layout thrash
       const now = performance.now();
       if (now - lastLabelUpdate > 250) {
         lastLabelUpdate = now;
@@ -86,7 +105,7 @@ function PlayModal({ rec, url, onClose }) {
 
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [duration]); // only re-run if duration changes (it won't after mount)
+  }, []); // run once on mount — reads vid state live each frame
 
   // ── Keyboard close ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -99,8 +118,22 @@ function PlayModal({ rec, url, onClose }) {
   const togglePlay = () => {
     const vid = videoRef.current;
     if (!vid) return;
-    if (vid.paused) { vid.play(); setIsPlaying(true); }
-    else            { vid.pause(); setIsPlaying(false); }
+    if (vid.paused || vid.ended) {
+      // If the user presses Play after the video has ended, intentionally restart from 0.
+      // This is the ONLY place we reset the playhead to 0.
+      if (isEndedRef.current) {
+        isEndedRef.current = false;
+        vid.currentTime = 0;
+        if (fillRef.current)  fillRef.current.style.width = "0%";
+        if (thumbRef.current) thumbRef.current.style.left  = "0%";
+        setCurrentTime(0);
+      }
+      vid.play();
+      setIsPlaying(true);
+    } else {
+      vid.pause();
+      setIsPlaying(false);
+    }
   };
 
   // ── Seek: compute time from pointer position and set video.currentTime ───
@@ -109,11 +142,16 @@ function PlayModal({ rec, url, onClose }) {
     const vid = videoRef.current;
     const fill = fillRef.current;
     const thumb = thumbRef.current;
-    if (!bar || !vid || !duration) return;
+    if (!bar || !vid) return;
+    // Use the live video duration when available — more accurate than stored value
+    const effectiveDuration = (isFinite(vid.duration) && vid.duration > 0)
+      ? vid.duration
+      : durationRef.current;
+    if (!effectiveDuration) return;
     const rect   = bar.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const ratio  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const newTime = ratio * duration;
+    const newTime = ratio * effectiveDuration;
     vid.currentTime = newTime;
     setCurrentTime(newTime);
     // Immediately update DOM so the bar doesn't lag during drag
@@ -124,6 +162,8 @@ function PlayModal({ rec, url, onClose }) {
 
   const handleBarPointerDown = (e) => {
     e.preventDefault();
+    // Seeking clears the ended state so the RAF resumes tracking from the new position.
+    isEndedRef.current = false;
     isDraggingRef.current = true;
     seekFromEvent(e);
     const onMove = (ev) => { if (isDraggingRef.current) seekFromEvent(ev); };
@@ -156,9 +196,37 @@ function PlayModal({ rec, url, onClose }) {
           className="play-modal-video"
           src={url}
           autoPlay
-          onPlay={()  => setIsPlaying(true)}
-          onPause={()  => setIsPlaying(false)}
-          onEnded={()  => setIsPlaying(false)}
+          onPlay={() => {
+            // Clear the ended flag whenever playback (re)starts — RAF resumes tracking.
+            isEndedRef.current = false;
+            setIsPlaying(true);
+          }}
+          onPause={() => setIsPlaying(false)}
+          onLoadedMetadata={() => {
+            const vid = videoRef.current;
+            if (vid && isFinite(vid.duration) && vid.duration > 0) {
+              // Use the actual decoded video duration — overrides the stored string value.
+              // Do NOT reset currentTime here: loadedmetadata fires again after seeks and
+              // after ended, so calling setCurrentTime(0) would reset the label on every seek.
+              setDuration(vid.duration);
+              // Only update the label if the video hasn't started yet (currentTime is 0)
+              // so we don't overwrite a valid seek position with 0.
+              if (vid.currentTime === 0) setCurrentTime(0);
+            }
+          }}
+          onEnded={() => {
+            // Mark as ended FIRST so the RAF loop stops overwriting the bar position.
+            isEndedRef.current = true;
+            setIsPlaying(false);
+            // Snap bar to 100% and set label to the real final time.
+            if (fillRef.current)  fillRef.current.style.width  = "100%";
+            if (thumbRef.current) thumbRef.current.style.left  = "100%";
+            const vid = videoRef.current;
+            const endTime = (vid && isFinite(vid.duration) && vid.duration > 0)
+              ? vid.duration
+              : durationRef.current;
+            setCurrentTime(endTime);
+          }}
         />
         {/* ── Seek bar ── */}
         <div className="play-modal-controls">
@@ -174,7 +242,7 @@ function PlayModal({ rec, url, onClose }) {
             <div ref={fillRef}  className="play-modal-progress-fill"  style={{ width: "0%" }} />
             <div ref={thumbRef} className="play-modal-progress-thumb" style={{ left:  "0%" }} />
           </div>
-          <span className="play-modal-timetext">{fmt(duration)}</span>
+          <span className="play-modal-timetext">{fmt(duration > 0 ? duration : durationRef.current)}</span>
         </div>
         <div className="play-modal-meta">
           <span>⏱ {rec.duration}</span>
@@ -405,6 +473,13 @@ function Library() {
                   onClick={() => handlePlay(rec)}
                 >
                   ▶️ Play
+                </button>
+                <button
+                  className="card-btn"
+                  title="Edit"
+                  onClick={() => navigate(`/editor?id=${rec.id}`)}
+                >
+                  ✂️ Edit
                 </button>
                 <button
                   className="card-btn"
