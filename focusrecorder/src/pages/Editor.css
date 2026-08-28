@@ -407,3 +407,180 @@
   50% { transform: translateY(-6px); }
 }
 
+/* ── STAGE 3 EDITING STYLES ── */
+.tl-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.tl-btn.danger {
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.tl-btn.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+/* Visual Drag Handles on Selected Clip */
+.clip-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  background: #ffffff;
+  cursor: col-resize;
+  z-index: 10;
+  opacity: 0.85;
+  transition: opacity 0.15s, background-color 0.15s;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+}
+
+.clip-handle:hover {
+  opacity: 1;
+  background: #a855f7;
+}
+
+.clip-handle-left {
+  left: 0;
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+.clip-handle-right {
+  right: 0;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+/* Timeline Empty State */
+.timeline-empty-msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #ef4444;
+  font-size: 0.8rem;
+  font-weight: 600;
+  user-select: none;
+}
+
+/* Trim Property Inputs */
+.trim-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.trim-input-wrapper input {
+  flex: 1;
+}
+
+.trim-time-badge {
+  font-size: 0.78rem;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── STAGE 4 COLOR EDITING PANEL ── */
+.tl-btn.active {
+  background: rgba(168, 85, 247, 0.2);
+  border-color: rgba(168, 85, 247, 0.5);
+  color: #a855f7;
+}
+
+.color-panel {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  animation: color-panel-fade-in 0.2s ease;
+}
+
+@keyframes color-panel-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.color-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.color-panel-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: 0.03em;
+}
+
+.color-reset-btn {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #9ca3af;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.color-reset-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f1f5f9;
+}
+
+.color-sliders-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem 1.25rem;
+}
+
+.color-slider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.color-slider-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #9ca3af;
+}
+
+.color-slider-label span:last-child {
+  color: #a855f7;
+  font-variant-numeric: tabular-nums;
+}
+
+.color-slider-group input[type="range"] {
+  width: 100%;
+  accent-color: #a855f7;
+  cursor: pointer;
+}
+
+.color-panel-footer {
+  display: flex;
+  align-items: center;
+  padding-top: 0.25rem;
+}
+
+.color-notice-badge {
+  font-size: 0.72rem;
+  color: #6b7280;
+  font-style: italic;
+}
+
+
