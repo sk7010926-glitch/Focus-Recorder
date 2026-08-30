@@ -45,9 +45,60 @@ function Editor() {
   const rafRef = useRef(null);
   const hasInitializedClips = useRef(false);
 
+  const getActiveSegments = useCallback(() => {
+    return [...clips].sort((a, b) => a.startTime - b.startTime);
+  }, [clips]);
+
+  const getEditedDuration = useCallback(() => {
+    return getActiveSegments().reduce((acc, c) => acc + (c.endTime - c.startTime), 0);
+  }, [getActiveSegments]);
+
+  const originalTimeToEditedTime = useCallback((origTime) => {
+    const active = getActiveSegments();
+    let edited = 0;
+    for (const c of active) {
+      if (origTime >= c.startTime && origTime <= c.endTime) {
+        return edited + (origTime - c.startTime);
+      }
+      if (origTime > c.endTime) {
+        edited += (c.endTime - c.startTime);
+      } else {
+        return edited;
+      }
+    }
+    return edited;
+  }, [getActiveSegments]);
+
+  const editedTimeToOriginalTime = useCallback((editedTime) => {
+    const active = getActiveSegments();
+    let currentEdited = 0;
+    for (const c of active) {
+      const dur = c.endTime - c.startTime;
+      if (editedTime >= currentEdited && editedTime <= currentEdited + dur) {
+        return c.startTime + (editedTime - currentEdited);
+      }
+      currentEdited += dur;
+    }
+    if (active.length > 0) return active[active.length - 1].endTime;
+    return 0;
+  }, [getActiveSegments]);
+
+  const findActiveSegmentAtEditedTime = useCallback((editedTime) => {
+    const active = getActiveSegments();
+    let currentEdited = 0;
+    for (const c of active) {
+      const dur = c.endTime - c.startTime;
+      if (editedTime >= currentEdited && editedTime <= currentEdited + dur) {
+        return c;
+      }
+      currentEdited += dur;
+    }
+    return null;
+  }, [getActiveSegments]);
+
   // Derivations for active clip and video preview filter
   const selectedClip = clips.find((c) => c.id === selectedSegmentId);
-  const activeClip = clips.find((c) => playhead >= c.startTime && playhead <= c.endTime) || selectedClip;
+  const activeClip = findActiveSegmentAtEditedTime(playhead) || selectedClip;
   const activeColors = activeClip?.colorSettings || DEFAULT_COLOR_SETTINGS;
   const videoFilterStyle = `brightness(${activeColors.brightness}%) contrast(${activeColors.contrast}%) saturate(${activeColors.saturation}%) grayscale(${activeColors.grayscale}%)`;
 
@@ -133,7 +184,24 @@ function Editor() {
   const togglePlay = () => {
     const vid = videoRef.current;
     if (!vid) return;
+
     if (vid.paused) {
+      const active = getActiveSegments();
+      if (active.length === 0) return;
+
+      const editedDur = getEditedDuration();
+      if (playhead >= editedDur) {
+         return; 
+      }
+
+      const currentOrigTime = vid.currentTime;
+      let inActiveSeg = active.some(c => currentOrigTime >= c.startTime && currentOrigTime < c.endTime);
+      
+      if (!inActiveSeg) {
+          const nextSeg = active.find(c => c.startTime > currentOrigTime) || active[0];
+          vid.currentTime = nextSeg.startTime;
+      }
+
       vid.play().catch((err) => console.error("Playback failed:", err));
     } else {
       vid.pause();
@@ -144,28 +212,39 @@ function Editor() {
     const vid = videoRef.current;
     if (!vid) return;
     vid.currentTime = Math.max(0, vid.currentTime - 5);
-    setPlayhead(vid.currentTime);
+    setPlayhead(originalTimeToEditedTime(vid.currentTime));
   };
 
   const handleForward = () => {
     const vid = videoRef.current;
     if (!vid) return;
     vid.currentTime = Math.min(duration, vid.currentTime + 5);
-    setPlayhead(vid.currentTime);
+    setPlayhead(originalTimeToEditedTime(vid.currentTime));
   };
 
   const handleStart = () => {
     const vid = videoRef.current;
     if (!vid) return;
-    vid.currentTime = 0;
+    const active = getActiveSegments();
+    if (active.length > 0) {
+      vid.currentTime = active[0].startTime;
+    } else {
+      vid.currentTime = 0;
+    }
     setPlayhead(0);
   };
 
   const handleEnd = () => {
     const vid = videoRef.current;
     if (!vid) return;
-    vid.currentTime = duration;
-    setPlayhead(duration);
+    const active = getActiveSegments();
+    if (active.length > 0) {
+      vid.currentTime = active[active.length-1].endTime;
+      setPlayhead(getEditedDuration());
+    } else {
+      vid.currentTime = duration;
+      setPlayhead(0);
+    }
   };
 
   const handleVolumeChange = (e) => {
@@ -189,19 +268,56 @@ function Editor() {
     const vid = videoRef.current;
     if (!vid || !duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left) / rect.width;
-    const newTime = ratio * duration;
-    vid.currentTime = newTime;
-    setPlayhead(newTime);
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    
+    const editedDur = getEditedDuration();
+    const targetEditedTime = ratio * editedDur;
+    const targetOrigTime = editedTimeToOriginalTime(targetEditedTime);
+    
+    vid.currentTime = targetOrigTime;
+    setPlayhead(targetEditedTime);
   };
 
   // ── requestAnimationFrame loop for smooth playhead sync ──
   const syncPlayhead = useCallback(() => {
     if (videoRef.current) {
-      setPlayhead(videoRef.current.currentTime);
+      const vid = videoRef.current;
+      const origTime = vid.currentTime;
+      const active = getActiveSegments();
+
+      if (active.length === 0) {
+        setPlayhead(0);
+        vid.pause();
+        setIsPlaying(false);
+      } else {
+        const activeSeg = active.find(c => origTime >= c.startTime && origTime < c.endTime);
+        if (activeSeg) {
+          setPlayhead(originalTimeToEditedTime(origTime));
+        } else {
+          const lastSeg = active[active.length - 1];
+          if (origTime >= lastSeg.endTime) {
+            vid.pause();
+            setIsPlaying(false);
+            setPlayhead(getEditedDuration());
+          } else {
+            const nextSeg = active.find(c => origTime < c.startTime);
+            if (nextSeg) {
+              vid.currentTime = nextSeg.startTime;
+              setPlayhead(originalTimeToEditedTime(nextSeg.startTime));
+            } else {
+              vid.pause();
+              setIsPlaying(false);
+              setPlayhead(getEditedDuration());
+            }
+          }
+        }
+      }
     }
-    rafRef.current = requestAnimationFrame(syncPlayhead);
-  }, []);
+    
+    if (videoRef.current && !videoRef.current.paused) {
+      rafRef.current = requestAnimationFrame(syncPlayhead);
+    }
+  }, [getActiveSegments, originalTimeToEditedTime, getEditedDuration]);
 
   const startRaf = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -229,19 +345,19 @@ function Editor() {
     setIsPlaying(false);
     stopRaf();
     if (videoRef.current) {
-      setPlayhead(videoRef.current.currentTime);
+      setPlayhead(originalTimeToEditedTime(videoRef.current.currentTime));
     }
   };
   const handleTimeUpdate = () => {
     if (videoRef.current && !rafRef.current) {
-      setPlayhead(videoRef.current.currentTime);
+      setPlayhead(originalTimeToEditedTime(videoRef.current.currentTime));
     }
   };
   const handleVideoEnded = () => {
     setIsPlaying(false);
     stopRaf();
     if (videoRef.current) {
-      setPlayhead(videoRef.current.currentTime);
+      setPlayhead(getEditedDuration());
     }
   };
   const handleLoadedMetadata = () => {
@@ -250,7 +366,7 @@ function Editor() {
       const raw = vid.duration;
       const vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
       setDuration(vidDuration);
-      setPlayhead(vid.currentTime);
+      setPlayhead(originalTimeToEditedTime(vid.currentTime));
       if (!hasInitializedClips.current && vidDuration > 0) {
         hasInitializedClips.current = true;
         const initialSeg = {
@@ -270,15 +386,16 @@ function Editor() {
   // ── STAGE 3 EDITING ACTIONS: SPLIT, DELETE, TRIM ──
 
   // Check if playhead is inside any segment with at least 0.2s clearance from edges
-  const currentSegmentToSplit = clips.find(
-    (c) => playhead > c.startTime + 0.2 && playhead < c.endTime - 0.2
-  );
-  const canSplit = Boolean(currentSegmentToSplit);
+  const activeClipForSplit = findActiveSegmentAtEditedTime(playhead);
+  const origSplitTime = videoRef.current ? videoRef.current.currentTime : editedTimeToOriginalTime(playhead);
+  const canSplit = activeClipForSplit && 
+                   (origSplitTime > activeClipForSplit.startTime + 0.2) && 
+                   (origSplitTime < activeClipForSplit.endTime - 0.2);
 
   // SPLIT
   const handleSplit = () => {
     const vid = videoRef.current;
-    const splitTime = vid ? vid.currentTime : playhead;
+    const splitTime = vid ? vid.currentTime : editedTimeToOriginalTime(playhead);
 
     const targetSeg = clips.find(
       (c) => splitTime > c.startTime && splitTime < c.endTime
@@ -401,7 +518,7 @@ function Editor() {
     if (videoRef.current) {
       const safeStart = Math.max(0, newStart);
       videoRef.current.currentTime = safeStart;
-      setPlayhead(safeStart);
+      setPlayhead(originalTimeToEditedTime(safeStart));
     }
   };
 
@@ -419,7 +536,7 @@ function Editor() {
     if (videoRef.current) {
       const safeEnd = Math.min(duration, newEnd);
       videoRef.current.currentTime = safeEnd;
-      setPlayhead(safeEnd);
+      setPlayhead(originalTimeToEditedTime(safeEnd));
     }
   };
 
@@ -432,25 +549,29 @@ function Editor() {
 
     const rect = track.getBoundingClientRect();
     const vid = videoRef.current;
+    
+    const initialClientX = e.clientX;
+    const initialStartTime = clip.startTime;
+    const initialEndTime = clip.endTime;
+    const initialEditedDuration = getEditedDuration();
 
     const onPointerMove = (moveEv) => {
-      const clientX = moveEv.clientX;
-      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      const targetTime = ratio * duration;
+      const deltaX = moveEv.clientX - initialClientX;
+      const deltaEditedTime = initialEditedDuration > 0 ? (deltaX / rect.width) * initialEditedDuration : 0;
 
       setClips((prevClips) =>
         prevClips.map((c) => {
           if (c.id !== clip.id) return c;
 
           if (handleType === "start") {
-            const validStart = Math.max(0, Math.min(targetTime, c.endTime - 0.1));
+            const validStart = Math.max(0, Math.min(initialStartTime + deltaEditedTime, c.endTime - 0.1));
             if (vid) vid.currentTime = validStart;
-            setPlayhead(validStart);
+            setPlayhead(originalTimeToEditedTime(validStart));
             return { ...c, startTime: validStart };
           } else {
-            const validEnd = Math.max(c.startTime + 0.1, Math.min(targetTime, duration));
+            const validEnd = Math.max(c.startTime + 0.1, Math.min(initialEndTime + deltaEditedTime, duration));
             if (vid) vid.currentTime = validEnd;
-            setPlayhead(validEnd);
+            setPlayhead(originalTimeToEditedTime(validEnd));
             return { ...c, endTime: validEnd };
           }
         })
@@ -566,7 +687,7 @@ function Editor() {
             </button>
             <button className="pb-btn" onClick={handleForward} title="Forward 5 seconds">⏩</button>
             <button className="pb-btn" onClick={handleEnd} title="Go to End">⏭</button>
-            <span className="pb-time">{formatTime(playhead)} / {formatTime(duration)}</span>
+            <span className="pb-time">{formatTime(playhead)} / {formatTime(getEditedDuration())}</span>
             <div className="volume-control">
               <span>{volume === 0 ? "🔇" : volume < 0.5 ? "🔉" : "🔊"}</span>
               <input
@@ -706,11 +827,21 @@ function Editor() {
                 </div>
               ) : (
                 /* Clips */
-                clips.map((clip) => {
+                getActiveSegments().map((clip) => {
                   const isSelected = selectedSegmentId === clip.id;
-                  const leftPct = duration > 0 ? (clip.startTime / duration) * 100 : 0;
-                  const widthPct =
-                    duration > 0 ? ((clip.endTime - clip.startTime) / duration) * 100 : 0;
+                  
+                  const active = getActiveSegments();
+                  let startEdited = 0;
+                  for (const c of active) {
+                      if (c.id === clip.id) break;
+                      startEdited += c.endTime - c.startTime;
+                  }
+                  
+                  const editedDur = getEditedDuration();
+                  const clipDur = clip.endTime - clip.startTime;
+                  
+                  const leftPct = editedDur > 0 ? (startEdited / editedDur) * 100 : 0;
+                  const widthPct = editedDur > 0 ? (clipDur / editedDur) * 100 : 0;
 
                   return (
                     <div
@@ -751,7 +882,7 @@ function Editor() {
               {/* Playhead */}
               <div
                 className="playhead"
-                style={{ left: `${duration > 0 ? (playhead / duration) * 100 : 0}%` }}
+                style={{ left: `${getEditedDuration() > 0 ? (playhead / getEditedDuration()) * 100 : 0}%` }}
               >
                 <div className="playhead-line" />
                 <div className="playhead-head" />
@@ -760,10 +891,10 @@ function Editor() {
 
             {/* Time ruler — dynamic marks based on actual duration */}
             <div className="time-ruler">
-              {duration > 0
+              {getEditedDuration() > 0
                 ? Array.from({ length: 9 }, (_, i) => (
                     <span key={i} style={{ left: `${(i / 8) * 100}%` }}>
-                      {formatTime((i / 8) * duration)}
+                      {formatTime((i / 8) * getEditedDuration())}
                     </span>
                   ))
                 : (
