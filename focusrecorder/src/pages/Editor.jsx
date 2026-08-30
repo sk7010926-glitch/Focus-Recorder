@@ -180,6 +180,14 @@ function Editor() {
     return `${m}:${sec}`;
   };
 
+  const parseDurationStr = (durStr) => {
+    if (!durStr) return 0;
+    const parts = durStr.split(":").map(Number);
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return 0;
+  };
+
   // Playback Control Handlers
   const togglePlay = () => {
     const vid = videoRef.current;
@@ -399,7 +407,10 @@ function Editor() {
     const vid = videoRef.current;
     if (vid) {
       const raw = vid.duration;
-      const vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
+      let vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
+      if (vidDuration === 0 && recording && recording.duration) {
+        vidDuration = parseDurationStr(recording.duration);
+      }
       setDuration(vidDuration);
       setPlayhead(originalTimeToEditedTime(vid.currentTime));
       if (!hasInitializedClips.current && vidDuration > 0) {
@@ -704,7 +715,11 @@ function Editor() {
                 onLoadedMetadata={handleLoadedMetadata}
                 onDurationChange={(e) => {
                   const raw = e.target.duration;
-                  if (isFinite(raw) && raw > 0) setDuration(raw);
+                  let vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
+                  if (vidDuration === 0 && recording && recording.duration) {
+                    vidDuration = parseDurationStr(recording.duration);
+                  }
+                  if (vidDuration > 0) setDuration(vidDuration);
                 }}
                 onEnded={handleVideoEnded}
               />

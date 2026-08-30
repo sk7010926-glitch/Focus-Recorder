@@ -275,6 +275,7 @@ function setWebmDuration(arrayBuffer, durationMs) {
   let durationSize = 0;
   // Track byte range of the Info block for potential Duration injection
   let infoBlockStart = -1;  // byte offset of the Info element ID
+  let infoBlockEnd = -1;    // byte offset just after Info element's content
   let infoSizeLength = 0;
   let infoSizeValue = 0;
 
@@ -973,7 +974,7 @@ export function useRecorder() {
         };
         timerWorker.postMessage("start");
 
-        const canvasStream = canvas.captureStream(0);
+        const canvasStream = canvas.captureStream(targetFps);
         const canvasVideoTrack = canvasStream.getVideoTracks()[0];
         canvasVideoTrackRef.current = canvasVideoTrack;
         combinedStream = new MediaStream([canvasVideoTrack, ...rawAudioTracks]);
