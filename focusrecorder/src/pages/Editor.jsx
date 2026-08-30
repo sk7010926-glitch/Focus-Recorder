@@ -26,12 +26,11 @@ function Editor() {
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(0.8);
-  const [selected, setSelected] = useState(null);
+  const [selectedSegmentId, setSelectedSegmentId] = useState(null);
   const [clips, setClips] = useState([]);
   const [playbackSpeed, setPlaybackSpeed] = useState("1x");
 
-  // Color Editing State (Stage 4)
-  const [colorSettings, setColorSettings] = useState(DEFAULT_COLOR_SETTINGS);
+  // Color Panel toggle
   const [showColorPanel, setShowColorPanel] = useState(false);
 
   // Export State (Stage 5)
@@ -39,13 +38,18 @@ function Editor() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [exportError, setExportError] = useState(null);
+  const [exportSuccess, setExportSuccess] = useState(null); // filename string on success
   const exportCancelRef = useRef({ cancelled: false });
 
   const videoRef = useRef(null);
   const rafRef = useRef(null);
   const hasInitializedClips = useRef(false);
 
-  const videoFilterStyle = `brightness(${colorSettings.brightness}%) contrast(${colorSettings.contrast}%) saturate(${colorSettings.saturation}%) grayscale(${colorSettings.grayscale}%)`;
+  // Derivations for active clip and video preview filter
+  const selectedClip = clips.find((c) => c.id === selectedSegmentId);
+  const activeClip = clips.find((c) => playhead >= c.startTime && playhead <= c.endTime) || selectedClip;
+  const activeColors = activeClip?.colorSettings || DEFAULT_COLOR_SETTINGS;
+  const videoFilterStyle = `brightness(${activeColors.brightness}%) contrast(${activeColors.contrast}%) saturate(${activeColors.saturation}%) grayscale(${activeColors.grayscale}%)`;
 
   // 1. Fetch recording details from IndexedDB
   useEffect(() => {
@@ -106,14 +110,15 @@ function Editor() {
     if (duration > 0 && clips.length === 0 && !hasInitializedClips.current) {
       hasInitializedClips.current = true;
       const initialSeg = {
-        id: "seg_1",
+        id: `seg_${Date.now()}`,
         name: "Segment 1",
         startTime: 0,
         endTime: duration,
         color: "#7c3aed",
+        colorSettings: { ...DEFAULT_COLOR_SETTINGS },
       };
       setClips([initialSeg]);
-      setSelected(initialSeg.id);
+      setSelectedSegmentId(initialSeg.id);
     }
   }, [duration, clips.length]);
 
@@ -249,14 +254,15 @@ function Editor() {
       if (!hasInitializedClips.current && vidDuration > 0) {
         hasInitializedClips.current = true;
         const initialSeg = {
-          id: "seg_1",
+          id: `seg_${Date.now()}`,
           name: "Segment 1",
           startTime: 0,
           endTime: vidDuration,
           color: "#7c3aed",
+          colorSettings: { ...DEFAULT_COLOR_SETTINGS },
         };
         setClips([initialSeg]);
-        setSelected(initialSeg.id);
+        setSelectedSegmentId(initialSeg.id);
       }
     }
   };
@@ -292,18 +298,24 @@ function Editor() {
       return;
     }
 
+    const timeStamp = Date.now();
+    const id1 = `seg_${timeStamp}_a_${Math.floor(Math.random() * 1000)}`;
+    const id2 = `seg_${timeStamp}_b_${Math.floor(Math.random() * 1000)}`;
+
     const seg1 = {
       ...targetSeg,
+      id: id1,
       endTime: splitTime,
+      colorSettings: { ...(targetSeg.colorSettings || DEFAULT_COLOR_SETTINGS) },
     };
 
-    const newId = `seg_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const seg2 = {
-      id: newId,
+      ...targetSeg,
+      id: id2,
       name: `Segment ${clips.length + 1}`,
       startTime: splitTime,
       endTime: targetSeg.endTime,
-      color: targetSeg.color || "#7c3aed",
+      colorSettings: { ...(targetSeg.colorSettings || DEFAULT_COLOR_SETTINGS) },
     };
 
     const updated = clips.flatMap((c) =>
@@ -312,13 +324,13 @@ function Editor() {
     updated.sort((a, b) => a.startTime - b.startTime);
 
     setClips(updated);
-    setSelected(seg2.id);
+    setSelectedSegmentId(seg2.id);
   };
 
   // DELETE
   const handleDeleteSegment = () => {
-    if (!selected) return;
-    const targetSeg = clips.find((c) => c.id === selected);
+    if (!selectedSegmentId) return;
+    const targetSeg = clips.find((c) => c.id === selectedSegmentId);
     if (!targetSeg) return;
 
     const confirmDelete = window.confirm(
@@ -326,9 +338,52 @@ function Editor() {
     );
     if (!confirmDelete) return;
 
-    const updated = clips.filter((c) => c.id !== selected);
+    const deletedIndex = clips.findIndex((c) => c.id === selectedSegmentId);
+    const updated = clips.filter((c) => c.id !== selectedSegmentId);
     setClips(updated);
-    setSelected(null);
+
+    if (updated.length > 0) {
+      const nextSelect = updated[Math.min(deletedIndex, updated.length - 1)];
+      setSelectedSegmentId(nextSelect.id);
+    } else {
+      setSelectedSegmentId(null);
+    }
+  };
+
+  // COLOR HANDLERS (PER SEGMENT)
+  const selectedColorSettings = selectedClip?.colorSettings || DEFAULT_COLOR_SETTINGS;
+
+  const handleColorChange = (key, value) => {
+    if (!selectedSegmentId) return;
+    setClips((prevClips) =>
+      prevClips.map((c) => {
+        if (c.id === selectedSegmentId) {
+          return {
+            ...c,
+            colorSettings: {
+              ...(c.colorSettings || DEFAULT_COLOR_SETTINGS),
+              [key]: value,
+            },
+          };
+        }
+        return c;
+      })
+    );
+  };
+
+  const handleResetColor = () => {
+    if (!selectedSegmentId) return;
+    setClips((prevClips) =>
+      prevClips.map((c) => {
+        if (c.id === selectedSegmentId) {
+          return {
+            ...c,
+            colorSettings: { ...DEFAULT_COLOR_SETTINGS },
+          };
+        }
+        return c;
+      })
+    );
   };
 
   // TRIM HANDLERS
@@ -465,8 +520,6 @@ function Editor() {
     );
   }
 
-  const selectedClip = clips.find((c) => c.id === selected);
-
   return (
     <div className="editor-page">
       <div className="page-header">
@@ -542,8 +595,8 @@ function Editor() {
                 <button
                   className="tl-btn danger"
                   onClick={handleDeleteSegment}
-                  disabled={!selected}
-                  title={selected ? "Delete selected segment" : "Select a segment to delete"}
+                  disabled={!selectedSegmentId}
+                  title={selectedSegmentId ? "Delete selected segment" : "Select a segment to delete"}
                 >
                   🗑️ Delete
                 </button>
@@ -561,82 +614,87 @@ function Editor() {
             {showColorPanel && (
               <div className="color-panel">
                 <div className="color-panel-header">
-                  <span className="color-panel-title">🎨 Color Adjustments (Preview)</span>
-                  <button
-                    className="color-reset-btn"
-                    onClick={() => setColorSettings(DEFAULT_COLOR_SETTINGS)}
-                    title="Reset color adjustments to default"
-                  >
-                    🔄 Reset
-                  </button>
-                </div>
-                <div className="color-sliders-grid">
-                  <div className="color-slider-group">
-                    <div className="color-slider-label">
-                      <span>Brightness</span>
-                      <span>{colorSettings.brightness}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="200"
-                      value={colorSettings.brightness}
-                      onChange={(e) =>
-                        setColorSettings((prev) => ({ ...prev, brightness: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                  <div className="color-slider-group">
-                    <div className="color-slider-label">
-                      <span>Contrast</span>
-                      <span>{colorSettings.contrast}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="200"
-                      value={colorSettings.contrast}
-                      onChange={(e) =>
-                        setColorSettings((prev) => ({ ...prev, contrast: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                  <div className="color-slider-group">
-                    <div className="color-slider-label">
-                      <span>Saturation</span>
-                      <span>{colorSettings.saturation}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="200"
-                      value={colorSettings.saturation}
-                      onChange={(e) =>
-                        setColorSettings((prev) => ({ ...prev, saturation: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                  <div className="color-slider-group">
-                    <div className="color-slider-label">
-                      <span>Grayscale</span>
-                      <span>{colorSettings.grayscale}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={colorSettings.grayscale}
-                      onChange={(e) =>
-                        setColorSettings((prev) => ({ ...prev, grayscale: Number(e.target.value) }))
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="color-panel-footer">
-                  <span className="color-notice-badge">
-                    ℹ️ Preview-only: Color filters apply to the real-time player preview.
+                  <span className="color-panel-title">
+                    🎨 Color Adjustments ({selectedClip ? selectedClip.name : "No Segment Selected"})
                   </span>
+                  {selectedClip && (
+                    <button
+                      className="color-reset-btn"
+                      onClick={handleResetColor}
+                      title="Reset color adjustments to default"
+                    >
+                      🔄 Reset
+                    </button>
+                  )}
                 </div>
+
+                {!selectedClip ? (
+                  <div className="color-notice-badge" style={{ padding: "0.5rem 0" }}>
+                    ⚠️ Please select a segment on the timeline to adjust its color settings.
+                  </div>
+                ) : (
+                  <>
+                    <div className="color-sliders-grid">
+                      <div className="color-slider-group">
+                        <div className="color-slider-label">
+                          <span>Brightness</span>
+                          <span>{selectedColorSettings.brightness}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="200"
+                          value={selectedColorSettings.brightness}
+                          onChange={(e) => handleColorChange("brightness", Number(e.target.value))}
+                        />
+                      </div>
+                      <div className="color-slider-group">
+                        <div className="color-slider-label">
+                          <span>Contrast</span>
+                          <span>{selectedColorSettings.contrast}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="200"
+                          value={selectedColorSettings.contrast}
+                          onChange={(e) => handleColorChange("contrast", Number(e.target.value))}
+                        />
+                      </div>
+                      <div className="color-slider-group">
+                        <div className="color-slider-label">
+                          <span>Saturation</span>
+                          <span>{selectedColorSettings.saturation}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="200"
+                          value={selectedColorSettings.saturation}
+                          onChange={(e) => handleColorChange("saturation", Number(e.target.value))}
+                        />
+                      </div>
+                      <div className="color-slider-group">
+                        <div className="color-slider-label">
+                          <span>Grayscale</span>
+                          <span>{selectedColorSettings.grayscale}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={selectedColorSettings.grayscale}
+                          onChange={(e) => handleColorChange("grayscale", Number(e.target.value))}
+                        />
+                      </div>
+                    </div>
+                    <div className="color-panel-footer">
+                      <span className="color-notice-badge">
+                        ✅ Color filters apply independently to {selectedClip.name}.
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -649,7 +707,7 @@ function Editor() {
               ) : (
                 /* Clips */
                 clips.map((clip) => {
-                  const isSelected = selected === clip.id;
+                  const isSelected = selectedSegmentId === clip.id;
                   const leftPct = duration > 0 ? (clip.startTime / duration) * 100 : 0;
                   const widthPct =
                     duration > 0 ? ((clip.endTime - clip.startTime) / duration) * 100 : 0;
@@ -665,7 +723,7 @@ function Editor() {
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        setSelected(clip.id);
+                        setSelectedSegmentId(clip.id);
                       }}
                     >
                       {/* Trim Handles for selected clip */}
@@ -732,7 +790,7 @@ function Editor() {
                   value={selectedClip.name || ""}
                   onChange={(e) => {
                     const nextClips = clips.map((c) =>
-                      c.id === selected ? { ...c, name: e.target.value } : c
+                      c.id === selectedSegmentId ? { ...c, name: e.target.value } : c
                     );
                     setClips(nextClips);
                   }}
@@ -851,31 +909,42 @@ function Editor() {
               disabled={isExporting || clips.length === 0 || !videoUrl}
               onClick={async () => {
                 if (isExporting) return;
+                // Pause the preview video so it doesn't compete with the export audio routing
+                if (videoRef.current && !videoRef.current.paused) {
+                  videoRef.current.pause();
+                }
                 setIsExporting(true);
                 setExportProgress(0);
                 setExportError(null);
-                exportCancelRef.current = { cancelled: false };
+                setExportSuccess(null);
+                // Create a fresh cancel ref for this export run
+                const cancelToken = { cancelled: false };
+                exportCancelRef.current = cancelToken;
                 try {
                   const { blob, mimeType } = await exportVideo({
                     sourceUrl: videoUrl,
                     segments: clips,
-                    colorSettings,
+                    colorSettings: selectedClip?.colorSettings || DEFAULT_COLOR_SETTINGS,
                     resolution: exportResolution,
                     onProgress: setExportProgress,
-                    cancelRef: exportCancelRef.current,
+                    cancelRef: cancelToken,
                   });
-                  const ext = mimeType.includes("webm") ? "webm" : "webm";
-                  const filename = `${(recording?.title || "export").replace(/[^a-z0-9_-]/gi, "_")}_edited.${ext}`;
-                  const url = URL.createObjectURL(blob);
+                  const ext = "webm";
+                  const baseName = (recording?.title || "export").replace(/[^a-z0-9_\-]/gi, "_");
+                  const filename = `${baseName}_edited.${ext}`;
+                  // Trigger download
+                  const dlUrl = URL.createObjectURL(blob);
                   const a = document.createElement("a");
-                  a.href = url;
+                  a.href = dlUrl;
                   a.download = filename;
                   document.body.appendChild(a);
                   a.click();
                   document.body.removeChild(a);
-                  setTimeout(() => URL.revokeObjectURL(url), 10000);
+                  // Keep the URL alive for 15s so the browser can serve it, then revoke
+                  setTimeout(() => URL.revokeObjectURL(dlUrl), 15000);
+                  setExportSuccess(filename);
                 } catch (err) {
-                  if (!exportCancelRef.current.cancelled) {
+                  if (!cancelToken.cancelled) {
                     console.error("[Export] Failed:", err);
                     setExportError(err.message || "Export failed.");
                   }
@@ -897,8 +966,14 @@ function Editor() {
               </button>
             )}
 
+            {exportSuccess && !isExporting && (
+              <div className="export-success-msg">
+                ✅ Saved: <strong>{exportSuccess}</strong>
+              </div>
+            )}
+
             <div className="export-notice">
-              ℹ️ Export re-encodes the video using Canvas + MediaRecorder. Applies trim, split, deletes, and color filters. Duration matches your edited segments. The original recording is not affected.
+              ℹ️ Re-encodes via Canvas + MediaRecorder (WebM/VP9). Applies split, trim, deletes &amp; color filters. Original recording is never modified.
             </div>
           </div>
         </div>

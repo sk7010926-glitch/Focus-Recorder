@@ -1,11 +1,12 @@
 /**
  * videoExport.js — Canvas + MediaRecorder export pipeline for FocusRecorder
  *
- * How it works:
+ * Pipeline:
  *  1. Create an off-screen <canvas> at the target resolution.
  *  2. Create a hidden <video> element sourced from the original ObjectURL.
  *  3. For each segment (trim/split respected, deleted segments skipped):
  *     - Seek the hidden video to segment.startTime
+ *     - Wait for seek + buffer (canplay) to be ready
  *     - Play and draw frames to canvas via requestAnimationFrame
  *     - Apply color adjustments via ctx.filter per frame
  *     - Stop at segment.endTime, continue to next segment
@@ -38,21 +39,57 @@ function pickMimeType() {
   return "video/webm";
 }
 
-/** Wait for video element to finish seeking */
+/**
+ * Wait for video element to finish seeking.
+ * Handles the race condition where the seek completes before we attach listeners.
+ */
 function waitForSeek(video) {
   return new Promise((resolve, reject) => {
+    // If not currently seeking, resolve immediately
+    if (!video.seeking) {
+      resolve();
+      return;
+    }
     const onSeeked = () => {
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("error", onError);
       resolve();
     };
-    const onError = () => {
+    const onError = (e) => {
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("error", onError);
-      reject(new Error("Video seek failed"));
+      reject(new Error("Video seek error: " + (e?.message || "unknown")));
     };
     video.addEventListener("seeked", onSeeked);
     video.addEventListener("error", onError);
+  });
+}
+
+/**
+ * Wait for video to be ready to play (buffered enough at current position).
+ * Returns immediately if readyState is already >= HAVE_FUTURE_DATA (3).
+ */
+function waitForCanPlay(video) {
+  return new Promise((resolve, reject) => {
+    if (video.readyState >= 3) { resolve(); return; }
+    const onCanPlay = () => {
+      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("error", onErr);
+      resolve();
+    };
+    const onErr = (e) => {
+      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("error", onErr);
+      reject(new Error("Video buffering error: " + (e?.message || "unknown")));
+    };
+    video.addEventListener("canplay", onCanPlay);
+    video.addEventListener("error", onErr);
+    // Safety timeout: if buffer never fires within 10s, continue anyway
+    setTimeout(() => {
+      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("error", onErr);
+      resolve();
+    }, 10000);
   });
 }
 
@@ -65,10 +102,10 @@ function waitForMeta(video) {
       video.removeEventListener("error", onErr);
       resolve();
     };
-    const onErr = () => {
+    const onErr = (e) => {
       video.removeEventListener("loadedmetadata", onMeta);
       video.removeEventListener("error", onErr);
-      reject(new Error("Video failed to load metadata"));
+      reject(new Error("Video failed to load metadata: " + (e?.message || "unknown")));
     };
     video.addEventListener("loadedmetadata", onMeta);
     video.addEventListener("error", onErr);
@@ -76,28 +113,57 @@ function waitForMeta(video) {
 }
 
 /**
- * Process one segment: seek → play → draw frames → stop at endTime.
+ * Process one segment: seek → buffer → play → draw frames → stop at endTime.
+ *
+ * @param {HTMLVideoElement} video
+ * @param {HTMLCanvasElement} canvas
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {{ startTime: number, endTime: number }} segment
+ * @param {string} filterStr   - CSS filter string for color effects
+ * @param {function(number)} onSegProgress  - called with 0..1 fraction
+ * @param {{ cancelled: boolean }} cancelRef
  */
 function processSegment(video, canvas, ctx, segment, filterStr, onSegProgress, cancelRef) {
   return new Promise((resolve, reject) => {
     const segDuration = Math.max(0.001, segment.endTime - segment.startTime);
 
+    // Seek to segment start
     video.currentTime = segment.startTime;
 
     waitForSeek(video)
+      .then(() => waitForCanPlay(video))
       .then(() => {
         if (cancelRef.cancelled) { resolve(); return; }
 
-        // Draw first frame immediately
+        // Draw the first frame immediately so recorder captures it
         ctx.filter = filterStr;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         let rafId = null;
+        let resolved = false;
+
+        const finish = () => {
+          if (resolved) return;
+          resolved = true;
+          video.pause();
+          if (rafId !== null) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+          }
+          // Draw final frame
+          ctx.filter = filterStr;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          onSegProgress(1);
+          resolve();
+        };
 
         const drawFrame = () => {
+          if (resolved) return;
+
           if (cancelRef.cancelled) {
             video.pause();
             if (rafId !== null) cancelAnimationFrame(rafId);
+            resolved = true;
             resolve();
             return;
           }
@@ -105,13 +171,7 @@ function processSegment(video, canvas, ctx, segment, filterStr, onSegProgress, c
           const ct = video.currentTime;
 
           if (ct >= segment.endTime || video.ended) {
-            video.pause();
-            if (rafId !== null) cancelAnimationFrame(rafId);
-            // Draw final frame
-            ctx.filter = filterStr;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            onSegProgress(1);
-            resolve();
+            finish();
             return;
           }
 
@@ -123,13 +183,20 @@ function processSegment(video, canvas, ctx, segment, filterStr, onSegProgress, c
         };
 
         video.play()
-          .then(() => { rafId = requestAnimationFrame(drawFrame); })
+          .then(() => {
+            rafId = requestAnimationFrame(drawFrame);
+          })
           .catch((err) => {
-            if (rafId !== null) cancelAnimationFrame(rafId);
-            reject(new Error("Playback error: " + err.message));
+            if (!resolved) {
+              resolved = true;
+              if (rafId !== null) cancelAnimationFrame(rafId);
+              reject(new Error("Playback error: " + (err?.message || err)));
+            }
           });
       })
-      .catch(reject);
+      .catch((err) => {
+        reject(err);
+      });
   });
 }
 
@@ -138,7 +205,7 @@ function processSegment(video, canvas, ctx, segment, filterStr, onSegProgress, c
  *
  * @param {object} opts
  * @param {string}   opts.sourceUrl       - ObjectURL of the original recording blob
- * @param {Array}    opts.segments         - Ordered array of { id, startTime, endTime }
+ * @param {Array}    opts.segments         - Array of { id, startTime, endTime } (deleted ones already excluded)
  * @param {object}   opts.colorSettings    - { brightness, contrast, saturation, grayscale }
  * @param {string}   opts.resolution       - "720" | "1080" | "4k"
  * @param {Function} opts.onProgress       - callback(0..100)
@@ -157,6 +224,7 @@ export async function exportVideo({
     throw new Error("No segments to export — all segments have been deleted.");
   }
 
+  // Sort segments by their position in the original video timeline
   const orderedSegments = [...segments].sort((a, b) => a.startTime - b.startTime);
   const totalDuration = orderedSegments.reduce(
     (sum, s) => sum + Math.max(0, s.endTime - s.startTime),
@@ -166,7 +234,7 @@ export async function exportVideo({
 
   const { w: outW, h: outH } = RESOLUTION_MAP[resolution] || RESOLUTION_MAP["1080"];
 
-  // ── Canvas ──
+  // ── Canvas (off-screen) ──
   const canvas = document.createElement("canvas");
   canvas.width = outW;
   canvas.height = outH;
@@ -174,14 +242,19 @@ export async function exportVideo({
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, outW, outH);
 
+  // Build CSS filter string from color settings
   const { brightness = 100, contrast = 100, saturation = 100, grayscale = 0 } = colorSettings || {};
-  const filterStr = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) grayscale(${grayscale}%)`;
+  const isDefaultColor = brightness === 100 && contrast === 100 && saturation === 100 && grayscale === 0;
+  const filterStr = isDefaultColor
+    ? "none"
+    : `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) grayscale(${grayscale}%)`;
 
-  // ── Hidden source video (muted — audio routed via AudioContext) ──
+  // ── Hidden source video ──
   const video = document.createElement("video");
   video.src = sourceUrl;
   video.preload = "auto";
-  video.muted = true;
+  video.muted = true;  // will be unmuted if AudioContext succeeds
+  video.crossOrigin = "anonymous";  // needed for createMediaElementSource in some browsers
 
   await waitForMeta(video);
   if (cancelRef.cancelled) throw new Error("Export cancelled.");
@@ -193,22 +266,24 @@ export async function exportVideo({
     audioCtx = new AudioContext();
     if (audioCtx.state === "suspended") await audioCtx.resume();
 
-    // Un-mute the video element so its audio flows into AudioContext
+    // Un-mute so audio flows through AudioContext
     video.muted = false;
 
     const audioSrc = audioCtx.createMediaElementSource(video);
     audioDest = audioCtx.createMediaStreamDestination();
 
-    // Route audio to capture destination (not speakers)
+    // Route: audio source → capture destination (to record)
     audioSrc.connect(audioDest);
 
-    // Silence the speakers during export via a zeroed gain node
+    // Also route through a silent gain node to suppress speaker output during export
     const silenceGain = audioCtx.createGain();
     silenceGain.gain.value = 0;
     audioSrc.connect(silenceGain);
     silenceGain.connect(audioCtx.destination);
+
+    console.log("[Export] AudioContext ready — audio will be included in export.");
   } catch (audioErr) {
-    console.warn("[Export] AudioContext setup failed — video-only export:", audioErr);
+    console.warn("[Export] AudioContext setup failed — exporting video-only:", audioErr.message);
     audioCtx = null;
     audioDest = null;
     video.muted = true;
@@ -217,30 +292,58 @@ export async function exportVideo({
   // ── MediaRecorder ──
   const mimeType = pickMimeType();
   const canvasStream = canvas.captureStream(30);
+
   if (audioDest) {
     audioDest.stream.getAudioTracks().forEach((t) => canvasStream.addTrack(t));
+    console.log("[Export] Audio tracks added to stream:", audioDest.stream.getAudioTracks().length);
   }
 
-  const chunks = [];
-  const recorder = new MediaRecorder(canvasStream, {
-    mimeType,
-    videoBitsPerSecond:
-      outW >= 3840 ? 28_000_000 : outW >= 1920 ? 12_000_000 : 6_000_000,
-  });
-  recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-  recorder.start(250);
+  let videoBps;
+  if (outW >= 3840)      videoBps = 28_000_000;
+  else if (outW >= 1920) videoBps = 12_000_000;
+  else                   videoBps =  6_000_000;
 
-  // ── Process segments ──
+  const recorderOptions = { mimeType, videoBitsPerSecond: videoBps };
+  const chunks = [];
+  let recorder;
+
+  try {
+    recorder = new MediaRecorder(canvasStream, recorderOptions);
+  } catch (e) {
+    // Fallback: try without explicit options
+    console.warn("[Export] MediaRecorder with options failed, trying without:", e.message);
+    recorder = new MediaRecorder(canvasStream);
+  }
+
+  recorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) chunks.push(e.data);
+  };
+  recorder.start(250); // collect chunks every 250ms
+
+  console.log(`[Export] Starting — codec: ${mimeType}, resolution: ${outW}×${outH}, segments: ${orderedSegments.length}`);
+
+  // ── Process each segment ──
   let completedDuration = 0;
   for (const segment of orderedSegments) {
     if (cancelRef.cancelled) break;
+
     const segDuration = Math.max(0, segment.endTime - segment.startTime);
     const capturedBefore = completedDuration;
 
-    await processSegment(video, canvas, ctx, segment, filterStr, (segFrac) => {
-      const done = capturedBefore + segFrac * segDuration;
-      onProgress(Math.min(99, Math.round((done / totalDuration) * 100)));
-    }, cancelRef);
+    console.log(`[Export] Processing segment: ${segment.startTime.toFixed(2)}s → ${segment.endTime.toFixed(2)}s (${segDuration.toFixed(2)}s)`);
+
+    await processSegment(
+      video,
+      canvas,
+      ctx,
+      segment,
+      filterStr,
+      (segFrac) => {
+        const done = capturedBefore + segFrac * segDuration;
+        onProgress(Math.min(99, Math.round((done / totalDuration) * 100)));
+      },
+      cancelRef
+    );
 
     completedDuration += segDuration;
   }
@@ -252,21 +355,34 @@ export async function exportVideo({
     throw new Error("Export cancelled by user.");
   }
 
-  // ── Stop recorder, collect final blob ──
+  // ── Stop recorder and collect the final Blob ──
   const rawBlob = await new Promise((resolve, reject) => {
-    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
-    recorder.onerror = (e) => reject(new Error("MediaRecorder error: " + (e.error?.message || e)));
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: mimeType });
+      console.log(`[Export] Raw blob: ${(blob.size / 1024 / 1024).toFixed(2)} MB, chunks: ${chunks.length}`);
+      resolve(blob);
+    };
+    recorder.onerror = (e) => {
+      reject(new Error("MediaRecorder error: " + (e.error?.message || String(e))));
+    };
     recorder.stop();
   });
+
+  if (rawBlob.size === 0) {
+    throw new Error("Export produced an empty file. The recording may be too short or the browser blocked canvas capture.");
+  }
 
   // ── Fix WebM duration header ──
   const actualDurationMs = Math.round(totalDuration * 1000);
   let outputBlob = rawBlob;
   try {
     const fixed = await fixWebmDuration(rawBlob, actualDurationMs, { logger: false });
-    if (fixed && fixed.size > 0) outputBlob = fixed;
+    if (fixed && fixed.size > 0) {
+      outputBlob = fixed;
+      console.log(`[Export] Duration header fixed to ${(actualDurationMs / 1000).toFixed(2)}s`);
+    }
   } catch (fixErr) {
-    console.warn("[Export] fix-webm-duration failed:", fixErr);
+    console.warn("[Export] fix-webm-duration failed (non-fatal):", fixErr.message);
   }
 
   // ── Cleanup ──
@@ -279,12 +395,15 @@ export async function exportVideo({
   return { blob: outputBlob, mimeType };
 }
 
-/** Returns which formats this browser actually supports via MediaRecorder */
+/**
+ * Returns which formats this browser actually supports via MediaRecorder.
+ * Call this to show the user what codecs are available.
+ */
 export function getSupportedFormats() {
   if (typeof MediaRecorder === "undefined") return [];
   return [
     { label: "WebM (VP9 + Opus)", mime: "video/webm;codecs=vp9,opus", ext: "webm" },
     { label: "WebM (VP8 + Opus)", mime: "video/webm;codecs=vp8,opus", ext: "webm" },
-    { label: "WebM (default)", mime: "video/webm", ext: "webm" },
+    { label: "WebM (default)",    mime: "video/webm",                  ext: "webm" },
   ].filter((f) => MediaRecorder.isTypeSupported(f.mime));
 }
