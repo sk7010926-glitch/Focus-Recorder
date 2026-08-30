@@ -275,7 +275,6 @@ function setWebmDuration(arrayBuffer, durationMs) {
   let durationSize = 0;
   // Track byte range of the Info block for potential Duration injection
   let infoBlockStart = -1;  // byte offset of the Info element ID
-  let infoBlockEnd = -1;    // byte offset just after Info element's content
   let infoSizeLength = 0;
   let infoSizeValue = 0;
 
@@ -306,11 +305,9 @@ function setWebmDuration(arrayBuffer, durationMs) {
           infoBlockStart = segIdStart;
           infoSizeLength = segSizeInfo.length;
           infoSizeValue = segSizeInfo.value;
-          const infoContentStart = offset;
           const infoEnd = segSizeInfo.isUnknown
             ? bytes.length
             : Math.min(offset + segSizeInfo.value, bytes.length);
-          infoBlockEnd = infoEnd;
 
           while (offset < infoEnd && offset < bytes.length - 4) {
             const infoIdInfo = readId(offset);
@@ -451,7 +448,7 @@ function createTimerWorker(fps = 30) {
       try {
         worker.postMessage("stop");
         worker.terminate();
-      } catch (e) { }
+      } catch (e) { console.warn(e); }
       URL.revokeObjectURL(url);
     };
     return worker;
@@ -497,7 +494,6 @@ export function useRecorder() {
   const camVideoRef = useRef(null);
   const pipRectRef = useRef({ x: 0, y: 0, width: 0, height: 0 });
   const rafIdRef = useRef(null);
-  const rvfcIdRef = useRef(null);
   const timerWorkerRef = useRef(null);
   const startTimestampRef = useRef(null);
   const recordingStartTimeRef = useRef(null);
@@ -555,7 +551,7 @@ export function useRecorder() {
     recordingActiveRef.current = false;
 
     if (timerWorkerRef.current) {
-      try { timerWorkerRef.current.cleanup(); } catch (e) { }
+      try { timerWorkerRef.current.cleanup(); } catch (e) { console.warn(e); }
       timerWorkerRef.current = null;
     }
 
@@ -674,11 +670,11 @@ export function useRecorder() {
 
   useEffect(() => {
     if (camOn) {
-      setCamReady(false);
       let resolveInit;
       camInitPromiseRef.current = new Promise(r => { resolveInit = r; });
       startCamStream()
         .then(stream => {
+          setCamReady(false);
           attachAndWatchCam(stream);
           setCamReady(true);
           resolveInit();
@@ -905,7 +901,7 @@ export function useRecorder() {
             }
             try {
               ctx.drawImage(rVideo, 0, 0, canvas.width, canvas.height);
-            } catch (e) { }
+            } catch (e) { console.warn(e); }
           }
 
           togglePixel = !togglePixel;
@@ -964,7 +960,7 @@ export function useRecorder() {
           }
 
           if (canvasVideoTrackRef.current && typeof canvasVideoTrackRef.current.requestFrame === "function") {
-            try { canvasVideoTrackRef.current.requestFrame(); } catch (e) { }
+            try { canvasVideoTrackRef.current.requestFrame(); } catch (e) { console.warn(e); }
           }
         };
 

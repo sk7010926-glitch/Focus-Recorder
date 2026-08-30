@@ -242,7 +242,7 @@ function PlayModal({ rec, url, onClose }) {
             <div ref={fillRef}  className="play-modal-progress-fill"  style={{ width: "0%" }} />
             <div ref={thumbRef} className="play-modal-progress-thumb" style={{ left:  "0%" }} />
           </div>
-          <span className="play-modal-timetext">{fmt(duration > 0 ? duration : durationRef.current)}</span>
+          <span className="play-modal-timetext">{fmt(duration)}</span>
         </div>
         <div className="play-modal-meta">
           <span>⏱ {rec.duration}</span>

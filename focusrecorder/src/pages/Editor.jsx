@@ -44,6 +44,7 @@ function Editor() {
   const videoRef = useRef(null);
   const rafRef = useRef(null);
   const hasInitializedClips = useRef(false);
+  const syncPlayheadRef = useRef(null);
 
   const getActiveSegments = useCallback(() => {
     return [...clips].sort((a, b) => a.startTime - b.startTime);
@@ -105,7 +106,7 @@ function Editor() {
   // 1. Fetch recording details from IndexedDB
   useEffect(() => {
     if (!recordingId) {
-      setIsLoading(false);
+      Promise.resolve().then(() => setIsLoading(false));
       return;
     }
 
@@ -279,50 +280,52 @@ function Editor() {
   };
 
   // ── requestAnimationFrame loop for smooth playhead sync ──
-  const syncPlayhead = useCallback(() => {
-    if (videoRef.current) {
-      const vid = videoRef.current;
-      const origTime = vid.currentTime;
-      const active = getActiveSegments();
+  useEffect(() => {
+    syncPlayheadRef.current = () => {
+      if (videoRef.current) {
+        const vid = videoRef.current;
+        const origTime = vid.currentTime;
+        const active = getActiveSegments();
 
-      if (active.length === 0) {
-        setPlayhead(0);
-        vid.pause();
-        setIsPlaying(false);
-      } else {
-        const activeSeg = active.find(c => origTime >= c.startTime && origTime < c.endTime);
-        if (activeSeg) {
-          setPlayhead(originalTimeToEditedTime(origTime));
+        if (active.length === 0) {
+          setPlayhead(0);
+          vid.pause();
+          setIsPlaying(false);
         } else {
-          const lastSeg = active[active.length - 1];
-          if (origTime >= lastSeg.endTime) {
-            vid.pause();
-            setIsPlaying(false);
-            setPlayhead(getEditedDuration());
+          const activeSeg = active.find(c => origTime >= c.startTime && origTime < c.endTime);
+          if (activeSeg) {
+            setPlayhead(originalTimeToEditedTime(origTime));
           } else {
-            const nextSeg = active.find(c => origTime < c.startTime);
-            if (nextSeg) {
-              vid.currentTime = nextSeg.startTime;
-              setPlayhead(originalTimeToEditedTime(nextSeg.startTime));
-            } else {
+            const lastSeg = active[active.length - 1];
+            if (origTime >= lastSeg.endTime) {
               vid.pause();
               setIsPlaying(false);
               setPlayhead(getEditedDuration());
+            } else {
+              const nextSeg = active.find(c => origTime < c.startTime);
+              if (nextSeg) {
+                vid.currentTime = nextSeg.startTime;
+                setPlayhead(originalTimeToEditedTime(nextSeg.startTime));
+              } else {
+                vid.pause();
+                setIsPlaying(false);
+                setPlayhead(getEditedDuration());
+              }
             }
           }
         }
       }
-    }
-    
-    if (videoRef.current && !videoRef.current.paused) {
-      rafRef.current = requestAnimationFrame(syncPlayhead);
-    }
+
+      if (videoRef.current && !videoRef.current.paused) {
+        rafRef.current = requestAnimationFrame(syncPlayheadRef.current);
+      }
+    };
   }, [getActiveSegments, originalTimeToEditedTime, getEditedDuration]);
 
   const startRaf = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(syncPlayhead);
-  }, [syncPlayhead]);
+    rafRef.current = requestAnimationFrame(syncPlayheadRef.current);
+  }, []);
 
   const stopRaf = useCallback(() => {
     if (rafRef.current) {
