@@ -187,7 +187,8 @@
   top: -4px;
   bottom: -4px;
   transform: translateX(-50%);
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: ew-resize;
   z-index: 5;
 }
 .playhead-line {

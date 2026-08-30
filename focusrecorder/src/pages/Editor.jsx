@@ -44,7 +44,6 @@ function Editor() {
   const videoRef = useRef(null);
   const rafRef = useRef(null);
   const hasInitializedClips = useRef(false);
-  const syncPlayheadRef = useRef(null);
 
   const getActiveSegments = useCallback(() => {
     return [...clips].sort((a, b) => a.startTime - b.startTime);
@@ -279,9 +278,53 @@ function Editor() {
     setPlayhead(targetEditedTime);
   };
 
-  // ── requestAnimationFrame loop for smooth playhead sync ──
-  useEffect(() => {
-    syncPlayheadRef.current = () => {
+  const handleTrackPointerDown = (e) => {
+    const track = e.currentTarget;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const editedDur = getEditedDuration();
+    const targetEditedTime = ratio * editedDur;
+    const targetOrigTime = editedTimeToOriginalTime(targetEditedTime);
+    if (videoRef.current && duration) {
+      videoRef.current.currentTime = targetOrigTime;
+      setPlayhead(targetEditedTime);
+    }
+  };
+
+  const handlePlayheadPointerDown = (e) => {
+    e.stopPropagation();
+    const track = e.currentTarget.closest('.timeline-track');
+    if (!track) return;
+    const editedDur = getEditedDuration();
+    if (!editedDur) return;
+    stopRaf();
+    if (videoRef.current) videoRef.current.pause();
+    const rect = track.getBoundingClientRect();
+    const onMove = (moveEv) => {
+      const ratio = Math.max(0, Math.min(1, (moveEv.clientX - rect.left) / rect.width));
+      const targetEditedTime = ratio * editedDur;
+      const targetOrigTime = editedTimeToOriginalTime(targetEditedTime);
+      if (videoRef.current) videoRef.current.currentTime = targetOrigTime;
+      setPlayhead(targetEditedTime);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const stopRaf = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  }, []);
+
+  const startRaf = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    const loop = () => {
       if (videoRef.current) {
         const vid = videoRef.current;
         const origTime = vid.currentTime;
@@ -315,24 +358,13 @@ function Editor() {
           }
         }
       }
-
+      
       if (videoRef.current && !videoRef.current.paused) {
-        rafRef.current = requestAnimationFrame(syncPlayheadRef.current);
+        rafRef.current = requestAnimationFrame(loop);
       }
     };
+    rafRef.current = requestAnimationFrame(loop);
   }, [getActiveSegments, originalTimeToEditedTime, getEditedDuration]);
-
-  const startRaf = useCallback(() => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(syncPlayheadRef.current);
-  }, []);
-
-  const stopRaf = useCallback(() => {
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-  }, []);
 
   // Cancel rAF on unmount
   useEffect(() => {
@@ -445,6 +477,9 @@ function Editor() {
 
     setClips(updated);
     setSelectedSegmentId(seg2.id);
+    if (videoRef.current) {
+      setPlayhead(originalTimeToEditedTime(videoRef.current.currentTime));
+    }
   };
 
   // DELETE
@@ -822,7 +857,7 @@ function Editor() {
               </div>
             )}
 
-            <div className="timeline-track" onClick={handleTrackClick}>
+            <div className="timeline-track" onClick={handleTrackClick} onPointerDown={handleTrackPointerDown}>
               {/* Empty state if all segments deleted */}
               {clips.length === 0 ? (
                 <div className="timeline-empty-msg">
@@ -886,6 +921,7 @@ function Editor() {
               <div
                 className="playhead"
                 style={{ left: `${getEditedDuration() > 0 ? (playhead / getEditedDuration()) * 100 : 0}%` }}
+                onPointerDown={handlePlayheadPointerDown}
               >
                 <div className="playhead-line" />
                 <div className="playhead-head" />
