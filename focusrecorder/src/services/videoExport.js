@@ -21,9 +21,9 @@
 import fixWebmDuration from "fix-webm-duration";
 
 const RESOLUTION_MAP = {
-  "720":  { w: 1280, h: 720  },
+  "720": { w: 1280, h: 720 },
   "1080": { w: 1920, h: 1080 },
-  "4k":   { w: 3840, h: 2160 },
+  "4k": { w: 3840, h: 2160 },
 };
 
 /** Pick the best WebM MIME type supported by this browser */
@@ -260,8 +260,8 @@ export async function exportVideo({
   if (cancelRef.cancelled) throw new Error("Export cancelled.");
 
   // ── AudioContext for audio capture ──
-  let audioCtx = null;
-  let audioDest = null;
+  let audioCtx;
+  let audioDest;
   try {
     audioCtx = new AudioContext();
     if (audioCtx.state === "suspended") await audioCtx.resume();
@@ -299,9 +299,9 @@ export async function exportVideo({
   }
 
   let videoBps;
-  if (outW >= 3840)      videoBps = 28_000_000;
+  if (outW >= 3840) videoBps = 28_000_000;
   else if (outW >= 1920) videoBps = 12_000_000;
-  else                   videoBps =  6_000_000;
+  else videoBps = 6_000_000;
 
   const recorderOptions = { mimeType, videoBitsPerSecond: videoBps };
   const chunks = [];
@@ -404,6 +404,6 @@ export function getSupportedFormats() {
   return [
     { label: "WebM (VP9 + Opus)", mime: "video/webm;codecs=vp9,opus", ext: "webm" },
     { label: "WebM (VP8 + Opus)", mime: "video/webm;codecs=vp8,opus", ext: "webm" },
-    { label: "WebM (default)",    mime: "video/webm",                  ext: "webm" },
+    { label: "WebM (default)", mime: "video/webm", ext: "webm" },
   ].filter((f) => MediaRecorder.isTypeSupported(f.mime));
 }

@@ -369,28 +369,28 @@ function setWebmDuration(arrayBuffer, durationMs) {
   if (infoBlockStart !== -1) {
     const DURATION_ELEMENT_SIZE = 11; // 2-byte ID (0x4489) + 1-byte size (0x88 = VINT for 8) + 8-byte float64
     const newBuffer = new Uint8Array(bytes.length + DURATION_ELEMENT_SIZE);
-    
+
     // Copy everything up to the end of Info content
     newBuffer.set(bytes.slice(0, infoBlockEnd), 0);
-    
+
     // Write the Duration element
     let ins = infoBlockEnd;
     newBuffer[ins++] = 0x44; // Duration ID high byte
     newBuffer[ins++] = 0x89; // Duration ID low byte  (0x4489)
     newBuffer[ins++] = 0x88; // VINT size: 0x88 = VINT size for 8
-    
+
     // Write float64 big-endian
     const tmp = new DataView(newBuffer.buffer);
     tmp.setFloat64(ins, durationValue, false);
     ins += 8;
-    
+
     // Copy remainder of original file
     newBuffer.set(bytes.slice(infoBlockEnd), ins);
-    
+
     // Update the size of the Info container in the new buffer
     // Info ID starts at infoBlockStart. The size VINT starts at infoBlockStart + 4 (Info ID is 4 bytes).
     writeVint(newBuffer, infoBlockStart + 4, infoSizeValue + DURATION_ELEMENT_SIZE, infoSizeLength);
-    
+
     return new Blob([newBuffer], { type: "video/webm" });
   }
 
@@ -677,12 +677,12 @@ export function useRecorder() {
         .then(stream => {
           setCamReady(false);
           attachAndWatchCam(stream);
-          setCamReady(true);
+          Promise.resolve().then(() => setCamReady(true));
           resolveInit();
         })
         .catch(err => {
           setCamOn(false);
-          setCamReady(true);
+          Promise.resolve().then(() => setCamReady(true));
           resolveInit();
           setError(err.name === "NotAllowedError"
             ? "Camera permission denied. Allow access and try again."
@@ -694,7 +694,7 @@ export function useRecorder() {
         camStreamRef.current = null;
       }
       if (camVideoRef.current) camVideoRef.current.srcObject = null;
-      setCamReady(true);
+      Promise.resolve().then(() => setCamReady(true));
       camInitPromiseRef.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

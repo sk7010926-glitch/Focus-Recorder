@@ -110,8 +110,8 @@ function Editor() {
     }
 
     let active = true;
-    setIsLoading(true);
-    setError(null);
+    // Avoid synchronous setState inside effect body
+    Promise.resolve().then(() => { setIsLoading(true); setError(null); });
 
     getRecording(recordingId)
       .then((rec) => {
@@ -199,15 +199,15 @@ function Editor() {
 
       const editedDur = getEditedDuration();
       if (playhead >= editedDur) {
-         return; 
+        return;
       }
 
       const currentOrigTime = vid.currentTime;
       let inActiveSeg = active.some(c => currentOrigTime >= c.startTime && currentOrigTime < c.endTime);
-      
+
       if (!inActiveSeg) {
-          const nextSeg = active.find(c => c.startTime > currentOrigTime) || active[0];
-          vid.currentTime = nextSeg.startTime;
+        const nextSeg = active.find(c => c.startTime > currentOrigTime) || active[0];
+        vid.currentTime = nextSeg.startTime;
       }
 
       vid.play().catch((err) => console.error("Playback failed:", err));
@@ -247,7 +247,7 @@ function Editor() {
     if (!vid) return;
     const active = getActiveSegments();
     if (active.length > 0) {
-      vid.currentTime = active[active.length-1].endTime;
+      vid.currentTime = active[active.length - 1].endTime;
       setPlayhead(getEditedDuration());
     } else {
       vid.currentTime = duration;
@@ -277,11 +277,11 @@ function Editor() {
     if (!vid || !duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    
+
     const editedDur = getEditedDuration();
     const targetEditedTime = ratio * editedDur;
     const targetOrigTime = editedTimeToOriginalTime(targetEditedTime);
-    
+
     vid.currentTime = targetOrigTime;
     setPlayhead(targetEditedTime);
   };
@@ -366,7 +366,7 @@ function Editor() {
           }
         }
       }
-      
+
       if (videoRef.current && !videoRef.current.paused) {
         rafRef.current = requestAnimationFrame(loop);
       }
@@ -433,10 +433,11 @@ function Editor() {
 
   // Check if playhead is inside any segment with at least 0.2s clearance from edges
   const activeClipForSplit = findActiveSegmentAtEditedTime(playhead);
-  const origSplitTime = videoRef.current ? videoRef.current.currentTime : editedTimeToOriginalTime(playhead);
-  const canSplit = activeClipForSplit && 
-                   (origSplitTime > activeClipForSplit.startTime + 0.2) && 
-                   (origSplitTime < activeClipForSplit.endTime - 0.2);
+  // Use the derived edited playhead time for render-time checks (avoid reading refs during render)
+  const origSplitTime = editedTimeToOriginalTime(playhead);
+  const canSplit = activeClipForSplit &&
+    (origSplitTime > activeClipForSplit.startTime + 0.2) &&
+    (origSplitTime < activeClipForSplit.endTime - 0.2);
 
   // SPLIT
   const handleSplit = () => {
@@ -598,7 +599,7 @@ function Editor() {
 
     const rect = track.getBoundingClientRect();
     const vid = videoRef.current;
-    
+
     const initialClientX = e.clientX;
     const initialStartTime = clip.startTime;
     const initialEndTime = clip.endTime;
@@ -882,17 +883,17 @@ function Editor() {
                 /* Clips */
                 getActiveSegments().map((clip) => {
                   const isSelected = selectedSegmentId === clip.id;
-                  
+
                   const active = getActiveSegments();
                   let startEdited = 0;
                   for (const c of active) {
-                      if (c.id === clip.id) break;
-                      startEdited += c.endTime - c.startTime;
+                    if (c.id === clip.id) break;
+                    startEdited += c.endTime - c.startTime;
                   }
-                  
+
                   const editedDur = getEditedDuration();
                   const clipDur = clip.endTime - clip.startTime;
-                  
+
                   const leftPct = editedDur > 0 ? (startEdited / editedDur) * 100 : 0;
                   const widthPct = editedDur > 0 ? (clipDur / editedDur) * 100 : 0;
 
@@ -947,16 +948,16 @@ function Editor() {
             <div className="time-ruler">
               {getEditedDuration() > 0
                 ? Array.from({ length: 9 }, (_, i) => (
-                    <span key={i} style={{ left: `${(i / 8) * 100}%` }}>
-                      {formatTime((i / 8) * getEditedDuration())}
-                    </span>
-                  ))
+                  <span key={i} style={{ left: `${(i / 8) * 100}%` }}>
+                    {formatTime((i / 8) * getEditedDuration())}
+                  </span>
+                ))
                 : (
-                    <>
-                      <span style={{ left: "0%" }}>00:00</span>
-                      <span style={{ left: "100%" }}>--:--</span>
-                    </>
-                  )
+                  <>
+                    <span style={{ left: "0%" }}>00:00</span>
+                    <span style={{ left: "100%" }}>--:--</span>
+                  </>
+                )
               }
             </div>
           </div>
@@ -1106,7 +1107,7 @@ function Editor() {
                 const cancelToken = { cancelled: false };
                 exportCancelRef.current = cancelToken;
                 try {
-                  const { blob, mimeType } = await exportVideo({
+                  const { blob } = await exportVideo({
                     sourceUrl: videoUrl,
                     segments: clips,
                     colorSettings: selectedClip?.colorSettings || DEFAULT_COLOR_SETTINGS,
@@ -1115,7 +1116,7 @@ function Editor() {
                     cancelRef: cancelToken,
                   });
                   const ext = "webm";
-                  const baseName = (recording?.title || "export").replace(/[^a-z0-9_\-]/gi, "_");
+                  const baseName = (recording?.title || "export").replace(/[^a-z0-9_-]/gi, "_");
                   const filename = `${baseName}_edited.${ext}`;
                   // Trigger download
                   const dlUrl = URL.createObjectURL(blob);
