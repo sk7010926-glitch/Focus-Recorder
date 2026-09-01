@@ -1110,7 +1110,7 @@ function Editor() {
                   const { blob } = await exportVideo({
                     sourceUrl: videoUrl,
                     segments: clips,
-                    colorSettings: selectedClip?.colorSettings || DEFAULT_COLOR_SETTINGS,
+                    colorSettings: DEFAULT_COLOR_SETTINGS,
                     resolution: exportResolution,
                     onProgress: setExportProgress,
                     cancelRef: cancelToken,

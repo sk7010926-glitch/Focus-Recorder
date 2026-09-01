@@ -113,89 +113,91 @@ function waitForMeta(video) {
 }
 
 /**
- * Process one segment: seek → buffer → play → draw frames → stop at endTime.
- *
- * @param {HTMLVideoElement} video
- * @param {HTMLCanvasElement} canvas
- * @param {CanvasRenderingContext2D} ctx
- * @param {{ startTime: number, endTime: number }} segment
- * @param {string} filterStr   - CSS filter string for color effects
- * @param {function(number)} onSegProgress  - called with 0..1 fraction
- * @param {{ cancelled: boolean }} cancelRef
+ * Helper to compute CSS filter string from color settings object.
  */
-function processSegment(video, canvas, ctx, segment, filterStr, onSegProgress, cancelRef) {
+function getFilterStr(colorSettings) {
+  const { brightness = 100, contrast = 100, saturation = 100, grayscale = 0 } = colorSettings || {};
+  const isDefaultColor = brightness === 100 && contrast === 100 && saturation === 100 && grayscale === 0;
+  return isDefaultColor
+    ? "none"
+    : `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) grayscale(${grayscale}%)`;
+}
+
+/**
+ * Seek video to segment start, wait for buffer/canplay, and draw initial frame to canvas.
+ */
+async function seekAndPrepareSegment(video, canvas, ctx, segment, filterStr, cancelRef) {
+  video.currentTime = segment.startTime;
+  await waitForSeek(video);
+  await waitForCanPlay(video);
+  if (cancelRef?.cancelled) return;
+
+  ctx.filter = filterStr;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+}
+
+/**
+ * Play video segment from current position to segment.endTime and draw frames on rAF.
+ */
+function playSegmentFrames(video, canvas, ctx, segment, filterStr, onSegProgress, cancelRef) {
   return new Promise((resolve, reject) => {
     const segDuration = Math.max(0.001, segment.endTime - segment.startTime);
 
-    // Seek to segment start
-    video.currentTime = segment.startTime;
+    ctx.filter = filterStr;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    waitForSeek(video)
-      .then(() => waitForCanPlay(video))
+    let rafId = null;
+    let resolved = false;
+
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      video.pause();
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      ctx.filter = filterStr;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      onSegProgress(1);
+      resolve();
+    };
+
+    const drawFrame = () => {
+      if (resolved) return;
+
+      if (cancelRef?.cancelled) {
+        video.pause();
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        resolved = true;
+        resolve();
+        return;
+      }
+
+      const ct = video.currentTime;
+
+      if (ct >= segment.endTime || video.ended) {
+        finish();
+        return;
+      }
+
+      ctx.filter = filterStr;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      onSegProgress(Math.min(1, (ct - segment.startTime) / segDuration));
+
+      rafId = requestAnimationFrame(drawFrame);
+    };
+
+    video.play()
       .then(() => {
-        if (cancelRef.cancelled) { resolve(); return; }
-
-        // Draw the first frame immediately so recorder captures it
-        ctx.filter = filterStr;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        let rafId = null;
-        let resolved = false;
-
-        const finish = () => {
-          if (resolved) return;
-          resolved = true;
-          video.pause();
-          if (rafId !== null) {
-            cancelAnimationFrame(rafId);
-            rafId = null;
-          }
-          // Draw final frame
-          ctx.filter = filterStr;
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          onSegProgress(1);
-          resolve();
-        };
-
-        const drawFrame = () => {
-          if (resolved) return;
-
-          if (cancelRef.cancelled) {
-            video.pause();
-            if (rafId !== null) cancelAnimationFrame(rafId);
-            resolved = true;
-            resolve();
-            return;
-          }
-
-          const ct = video.currentTime;
-
-          if (ct >= segment.endTime || video.ended) {
-            finish();
-            return;
-          }
-
-          ctx.filter = filterStr;
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          onSegProgress(Math.min(1, (ct - segment.startTime) / segDuration));
-
-          rafId = requestAnimationFrame(drawFrame);
-        };
-
-        video.play()
-          .then(() => {
-            rafId = requestAnimationFrame(drawFrame);
-          })
-          .catch((err) => {
-            if (!resolved) {
-              resolved = true;
-              if (rafId !== null) cancelAnimationFrame(rafId);
-              reject(new Error("Playback error: " + (err?.message || err)));
-            }
-          });
+        rafId = requestAnimationFrame(drawFrame);
       })
       .catch((err) => {
-        reject(err);
+        if (!resolved) {
+          resolved = true;
+          if (rafId !== null) cancelAnimationFrame(rafId);
+          reject(new Error("Playback error: " + (err?.message || err)));
+        }
       });
   });
 }
@@ -205,8 +207,8 @@ function processSegment(video, canvas, ctx, segment, filterStr, onSegProgress, c
  *
  * @param {object} opts
  * @param {string}   opts.sourceUrl       - ObjectURL of the original recording blob
- * @param {Array}    opts.segments         - Array of { id, startTime, endTime } (deleted ones already excluded)
- * @param {object}   opts.colorSettings    - { brightness, contrast, saturation, grayscale }
+ * @param {Array}    opts.segments         - Array of { id, startTime, endTime, colorSettings } (deleted ones already excluded)
+ * @param {object}   opts.colorSettings    - Default { brightness, contrast, saturation, grayscale }
  * @param {string}   opts.resolution       - "720" | "1080" | "4k"
  * @param {Function} opts.onProgress       - callback(0..100)
  * @param {{ cancelled: boolean }} opts.cancelRef
@@ -242,19 +244,11 @@ export async function exportVideo({
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, outW, outH);
 
-  // Build CSS filter string from color settings
-  const { brightness = 100, contrast = 100, saturation = 100, grayscale = 0 } = colorSettings || {};
-  const isDefaultColor = brightness === 100 && contrast === 100 && saturation === 100 && grayscale === 0;
-  const filterStr = isDefaultColor
-    ? "none"
-    : `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) grayscale(${grayscale}%)`;
-
   // ── Hidden source video ──
   const video = document.createElement("video");
   video.src = sourceUrl;
   video.preload = "auto";
-  video.muted = true;  // will be unmuted if AudioContext succeeds
-  video.crossOrigin = "anonymous";  // needed for createMediaElementSource in some browsers
+  video.muted = true;  // initialized muted; unmuted when AudioContext connects
 
   await waitForMeta(video);
   if (cancelRef.cancelled) throw new Error("Export cancelled.");
@@ -266,8 +260,9 @@ export async function exportVideo({
     audioCtx = new AudioContext();
     if (audioCtx.state === "suspended") await audioCtx.resume();
 
-    // Un-mute so audio flows through AudioContext
+    // Ensure video is unmuted and volume is full so audio streams into AudioContext
     video.muted = false;
+    video.volume = 1.0;
 
     const audioSrc = audioCtx.createMediaElementSource(video);
     audioDest = audioCtx.createMediaStreamDestination();
@@ -289,7 +284,7 @@ export async function exportVideo({
     video.muted = true;
   }
 
-  // ── MediaRecorder ──
+  // ── Stream setup ──
   const mimeType = pickMimeType();
   const canvasStream = canvas.captureStream(30);
 
@@ -318,21 +313,41 @@ export async function exportVideo({
   recorder.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) chunks.push(e.data);
   };
-  recorder.start(250); // collect chunks every 250ms
 
   console.log(`[Export] Starting — codec: ${mimeType}, resolution: ${outW}×${outH}, segments: ${orderedSegments.length}`);
 
-  // ── Process each segment ──
+  // ── Process segments synchronously with MediaRecorder ──
   let completedDuration = 0;
-  for (const segment of orderedSegments) {
+
+  for (let i = 0; i < orderedSegments.length; i++) {
     if (cancelRef.cancelled) break;
 
+    const segment = orderedSegments[i];
     const segDuration = Math.max(0, segment.endTime - segment.startTime);
     const capturedBefore = completedDuration;
+    const filterStr = getFilterStr(segment.colorSettings || colorSettings);
 
-    console.log(`[Export] Processing segment: ${segment.startTime.toFixed(2)}s → ${segment.endTime.toFixed(2)}s (${segDuration.toFixed(2)}s)`);
+    console.log(`[Export] Preparing segment ${i + 1}/${orderedSegments.length}: ${segment.startTime.toFixed(2)}s → ${segment.endTime.toFixed(2)}s`);
 
-    await processSegment(
+    // Pause recorder while seeking between segments to prevent gap recording
+    if (i > 0 && recorder.state === "recording") {
+      recorder.pause();
+    }
+
+    // Seek video and draw first frame BEFORE starting or resuming MediaRecorder
+    await seekAndPrepareSegment(video, canvas, ctx, segment, filterStr, cancelRef);
+
+    if (cancelRef.cancelled) break;
+
+    // Start recorder on segment 0, or resume recorder on segment > 0
+    if (i === 0 && recorder.state === "inactive") {
+      recorder.start(250);
+    } else if (recorder.state === "paused") {
+      recorder.resume();
+    }
+
+    // Play and record the frames for this segment
+    await playSegmentFrames(
       video,
       canvas,
       ctx,
@@ -349,7 +364,7 @@ export async function exportVideo({
   }
 
   if (cancelRef.cancelled) {
-    recorder.stop();
+    if (recorder.state !== "inactive") recorder.stop();
     if (audioCtx) audioCtx.close();
     video.src = "";
     throw new Error("Export cancelled by user.");
@@ -365,7 +380,14 @@ export async function exportVideo({
     recorder.onerror = (e) => {
       reject(new Error("MediaRecorder error: " + (e.error?.message || String(e))));
     };
-    recorder.stop();
+    try {
+      if (recorder.state !== "inactive") {
+        recorder.requestData();
+        recorder.stop();
+      }
+    } catch (err) {
+      if (recorder.state !== "inactive") recorder.stop();
+    }
   });
 
   if (rawBlob.size === 0) {
