@@ -287,6 +287,7 @@ function Editor() {
   };
 
   const handleTrackPointerDown = (e) => {
+    console.log('[TRACK] handleTrackPointerDown fired, target:', e.target.className);
     const track = e.currentTarget;
     const rect = track.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -496,25 +497,24 @@ function Editor() {
 
   // DELETE
   const handleDeleteSegment = () => {
-    if (!selectedSegmentId) return;
-    const targetSeg = clips.find((c) => c.id === selectedSegmentId);
-    if (!targetSeg) return;
-
-    const confirmDelete = window.confirm(
-      `Are you sure you want to delete "${targetSeg.name}"?`
-    );
+    console.log('[DELETE] handleDeleteSegment called');
+    console.log('[DELETE] selectedSegmentId:', selectedSegmentId);
+    if (!selectedSegmentId) { console.log('[DELETE] EARLY EXIT: no selectedSegmentId'); return; }
+    const targetSeg = clips.find(c => c.id === selectedSegmentId);
+    if (!targetSeg) { console.log('[DELETE] EARLY EXIT: targetSeg not found'); return; }
+    const confirmDelete = window.confirm(`Are you sure you want to delete "${targetSeg.name}"?`);
     if (!confirmDelete) return;
-
-    const deletedIndex = clips.findIndex((c) => c.id === selectedSegmentId);
-    const updated = clips.filter((c) => c.id !== selectedSegmentId);
-    setClips(updated);
-
-    if (updated.length > 0) {
-      const nextSelect = updated[Math.min(deletedIndex, updated.length - 1)];
-      setSelectedSegmentId(nextSelect.id);
-    } else {
-      setSelectedSegmentId(null);
-    }
+    setClips(prevClips => {
+      const updated = prevClips.filter(c => c.id !== selectedSegmentId);
+      console.log('[DELETE] updated clips after filter:', updated.map(c => ({ id: c.id, name: c.name })));
+      // After deletion, clear selection or select first remaining segment
+      if (updated.length > 0) {
+        setSelectedSegmentId(updated[0].id);
+      } else {
+        setSelectedSegmentId(null);
+      }
+      return updated;
+    });
   };
 
   // COLOR HANDLERS (PER SEGMENT)
@@ -906,8 +906,14 @@ function Editor() {
                         width: `${widthPct}%`,
                         background: clip.color || "#7c3aed",
                       }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        console.log('[SELECT] onPointerDown clip:', clip.id, clip.name);
+                        setSelectedSegmentId(clip.id);
+                      }}
                       onClick={(e) => {
                         e.stopPropagation();
+                        console.log('[SELECT] onClick clip:', clip.id, clip.name);
                         setSelectedSegmentId(clip.id);
                       }}
                     >
