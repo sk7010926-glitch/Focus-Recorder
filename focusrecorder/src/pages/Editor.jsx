@@ -19,6 +19,7 @@ function Editor() {
 
   const [recording, setRecording] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
+  const [sourceBlob, setSourceBlob] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -125,6 +126,7 @@ function Editor() {
         const url = URL.createObjectURL(rec.blob);
         setRecording(rec);
         setVideoUrl(url);
+        setSourceBlob(rec.blob);
         setIsLoading(false);
       })
       .catch((err) => {
@@ -143,11 +145,18 @@ function Editor() {
   // 2. Clean up the object URL to prevent memory leaks
   useEffect(() => {
     return () => {
-      if (videoUrl) {
+      if (videoUrl && !isExporting) {
         URL.revokeObjectURL(videoUrl);
       }
     };
-  }, [videoUrl]);
+  }, [videoUrl, isExporting]);
+
+  // Cancel any ongoing export and clean up on unmount
+  useEffect(() => {
+    return () => {
+      exportCancelRef.current.cancelled = true;
+    };
+  }, []);
 
   // 3. Keep video volume synchronized with state
   useEffect(() => {
@@ -1104,9 +1113,9 @@ function Editor() {
 
             <button
               className="export-btn"
-              disabled={isExporting || clips.length === 0 || !videoUrl}
+              disabled={isExporting || clips.length === 0 || !videoUrl || !sourceBlob}
               onClick={async () => {
-                if (isExporting) return;
+                if (isExporting || !sourceBlob) return;
                 // Pause the preview video so it doesn't compete with the export audio routing
                 if (videoRef.current && !videoRef.current.paused) {
                   videoRef.current.pause();
@@ -1118,9 +1127,11 @@ function Editor() {
                 // Create a fresh cancel ref for this export run
                 const cancelToken = { cancelled: false };
                 exportCancelRef.current = cancelToken;
+
+                const freshUrl = URL.createObjectURL(sourceBlob);
                 try {
                   const { blob } = await exportVideo({
-                    sourceUrl: videoUrl,
+                    sourceUrl: freshUrl,
                     segments: clips,
                     colorSettings: DEFAULT_COLOR_SETTINGS,
                     resolution: exportResolution,
@@ -1147,10 +1158,11 @@ function Editor() {
                     setExportError(err.message || "Export failed.");
                   }
                 } finally {
+                  URL.revokeObjectURL(freshUrl);
                   setIsExporting(false);
                 }
               }}
-              style={clips.length === 0 ? { opacity: 0.4, cursor: "not-allowed" } : {}}
+              style={clips.length === 0 || !sourceBlob ? { opacity: 0.4, cursor: "not-allowed" } : {}}
             >
               {isExporting ? "⏳ Exporting…" : "⬇ Export Video (.webm)"}
             </button>
