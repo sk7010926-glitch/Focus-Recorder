@@ -499,22 +499,28 @@ function Editor() {
   const handleDeleteSegment = () => {
     console.log('[DELETE] handleDeleteSegment called');
     console.log('[DELETE] selectedSegmentId:', selectedSegmentId);
+    console.log('[DELETE] clips at delete time:', clips.map(c => ({ id: c.id, name: c.name })));
     if (!selectedSegmentId) { console.log('[DELETE] EARLY EXIT: no selectedSegmentId'); return; }
-    const targetSeg = clips.find(c => c.id === selectedSegmentId);
-    if (!targetSeg) { console.log('[DELETE] EARLY EXIT: targetSeg not found'); return; }
-    const confirmDelete = window.confirm(`Are you sure you want to delete "${targetSeg.name}"?`);
+    const targetSeg = clips.find((c) => c.id === selectedSegmentId);
+    if (!targetSeg) { console.log('[DELETE] EARLY EXIT: targetSeg not found in clips'); return; }
+    console.log('[DELETE] Will confirm delete of:', targetSeg.name);
+
+    const confirmDelete = window.confirm(
+      `Are you sure you want to delete "${targetSeg.name}"?`
+    );
     if (!confirmDelete) return;
-    setClips(prevClips => {
-      const updated = prevClips.filter(c => c.id !== selectedSegmentId);
-      console.log('[DELETE] updated clips after filter:', updated.map(c => ({ id: c.id, name: c.name })));
-      // After deletion, clear selection or select first remaining segment
-      if (updated.length > 0) {
-        setSelectedSegmentId(updated[0].id);
-      } else {
-        setSelectedSegmentId(null);
-      }
-      return updated;
-    });
+
+    const deletedIndex = clips.findIndex((c) => c.id === selectedSegmentId);
+    const updated = clips.filter((c) => c.id !== selectedSegmentId);
+    console.log('[DELETE] updated clips after filter:', updated.map(c => ({ id: c.id, name: c.name })));
+    setClips(updated);
+
+    if (updated.length > 0) {
+      const nextSelect = updated[Math.min(deletedIndex, updated.length - 1)];
+      setSelectedSegmentId(nextSelect.id);
+    } else {
+      setSelectedSegmentId(null);
+    }
   };
 
   // COLOR HANDLERS (PER SEGMENT)
