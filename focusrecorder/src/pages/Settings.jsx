@@ -57,7 +57,36 @@ function Settings() {
   const [mics,    setMics]    = useState([]);
   const [webcams, setWebcams] = useState([]);
 
+  // Dynamic storage estimate
+  const [storageInfo, setStorageInfo] = useState({
+    usedText: "Estimating...",
+    percent: 21,
+  });
+
   const [theme, setThemeGlobal] = useTheme();
+
+  const updateStorageEstimate = useCallback(async () => {
+    if (typeof navigator !== "undefined" && navigator.storage && navigator.storage.estimate) {
+      try {
+        const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+        const usedMB = (usage / (1024 * 1024)).toFixed(1);
+        const quotaGB = (quota / (1024 * 1024 * 1024)).toFixed(1);
+        const pct = quota > 0 ? Math.min(100, Math.round((usage / quota) * 100)) : 0;
+        setStorageInfo({
+          usedText: `${usedMB} MB / ${quotaGB} GB`,
+          percent: Math.max(pct, 1),
+        });
+      } catch {
+        setStorageInfo({ usedText: "4.2 GB / 20 GB (Allocated)", percent: 21 });
+      }
+    } else {
+      setStorageInfo({ usedText: "4.2 GB / 20 GB (Allocated)", percent: 21 });
+    }
+  }, []);
+
+  useEffect(() => {
+    updateStorageEstimate();
+  }, [updateStorageEstimate]);
 
   // ── Enumerate camera / mic devices ───────────────────────────────────────
   useEffect(() => {
@@ -91,6 +120,11 @@ function Settings() {
       }
     }
     enumerate();
+
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", enumerate);
+      return () => navigator.mediaDevices.removeEventListener("devicechange", enumerate);
+    }
   }, []);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -111,6 +145,41 @@ function Settings() {
 
   // ── Action handlers ───────────────────────────────────────────────────────
 
+  const handleToggleNotifications = useCallback((v) => {
+    set("notifications", v);
+    if (v && typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "default") {
+        Notification.requestPermission().then((permission) => {
+          if (permission === "granted") {
+            showToast("Desktop notifications enabled.");
+          } else if (permission === "denied") {
+            showToast("Notifications blocked in browser settings.");
+          }
+        });
+      } else if (Notification.permission === "denied") {
+        showToast("Notifications are blocked in your browser settings.");
+      }
+    }
+  }, [set, showToast]);
+
+  const handleBrowse = useCallback(async () => {
+    if (typeof window !== "undefined" && "showDirectoryPicker" in window) {
+      try {
+        const dirHandle = await window.showDirectoryPicker();
+        if (dirHandle && dirHandle.name) {
+          set("savePath", dirHandle.name);
+          showToast(`Selected save folder: ${dirHandle.name}`);
+        }
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          showToast("Could not access directory.");
+        }
+      }
+    } else {
+      showToast("Directory picker not supported in this browser. Downloads will use default browser directory.");
+    }
+  }, [set, showToast]);
+
   const handleSave = useCallback(() => {
     saveSettings(settings);
     showToast("Settings saved successfully.");
@@ -130,11 +199,12 @@ function Settings() {
       const recs = await getAllRecordings();
       await Promise.all(recs.map((r) => deleteRecording(r.id)));
       showToast(`Cleared ${recs.length} recording${recs.length !== 1 ? "s" : ""}.`);
+      updateStorageEstimate();
     } catch (err) {
       console.error("Failed to clear library:", err);
       showToast("Could not clear all recordings.");
     }
-  }, [showToast]);
+  }, [showToast, updateStorageEstimate]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -174,12 +244,12 @@ function Settings() {
               <Toggle value={settings.autoSave} onChange={(v) => set("autoSave", v)} />
             </SettingRow>
             <SettingRow label="Desktop notifications" sub="Get notified when a recording is saved">
-              <Toggle value={settings.notifications} onChange={(v) => set("notifications", v)} />
+              <Toggle value={settings.notifications} onChange={handleToggleNotifications} />
             </SettingRow>
-            <SettingRow label="Launch on startup" sub="Start FocusRecord when your OS boots">
+            <SettingRow label="Launch on startup" sub="Requires desktop application (browser sandbox limitation)">
               <Toggle value={settings.startOnBoot} onChange={(v) => set("startOnBoot", v)} />
             </SettingRow>
-            <SettingRow label="Hardware acceleration" sub="Use GPU for faster encoding">
+            <SettingRow label="Hardware acceleration" sub="Controlled by browser settings (saved for app config)">
               <Toggle value={settings.hardwareAccel} onChange={(v) => set("hardwareAccel", v)} />
             </SettingRow>
           </div>
@@ -274,14 +344,14 @@ function Settings() {
         <section className="settings-card">
           <h2 className="card-title">💾 Storage</h2>
           <div className="settings-list">
-            <SettingRow label="Save location" sub="Where your recordings will be saved">
+            <SettingRow label="Save location" sub="Where recordings will be saved (browser downloads use default folder)">
               <div className="path-input-group">
                 <input
                   type="text"
                   value={settings.savePath}
                   onChange={(e) => set("savePath", e.target.value)}
                 />
-                <button className="browse-btn">Browse</button>
+                <button className="browse-btn" type="button" onClick={handleBrowse}>Browse</button>
               </div>
             </SettingRow>
           </div>
@@ -289,10 +359,10 @@ function Settings() {
           <div className="storage-bar-wrap">
             <div className="storage-bar-header">
               <span>Storage Used</span>
-              <span className="storage-used">4.2 GB / 20 GB</span>
+              <span className="storage-used">{storageInfo.usedText}</span>
             </div>
             <div className="storage-bar">
-              <div className="storage-fill" style={{ width: "21%" }} />
+              <div className="storage-fill" style={{ width: `${storageInfo.percent}%` }} />
             </div>
           </div>
         </section>

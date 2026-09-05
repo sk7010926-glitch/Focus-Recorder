@@ -71,33 +71,57 @@ button {
   font-size: 0.95rem;
 }
 
-/* ── Light Mode (Blend-Mode Overlay) ── */
-/* 
- * Instead of filter: invert(1) on html (which breaks fixed positioning),
- * we use a fixed overlay with mix-blend-mode: difference to invert all colours 
- * instantly without destroying the layout stacking context!
- */
-html.light::before {
-  content: "";
-  position: fixed;
-  top: 0; left: 0; width: 100vw; height: 100vh;
-  background-color: white;
-  mix-blend-mode: difference;
-  pointer-events: none;
-  z-index: 2147483647; /* stay on top of absolutely everything */
+/* ── Light Mode (Clean, Comfortable Theme) ── */
+html.light,
+html.light body {
+  background: #f8fafc;
+  color: #334155;
 }
 
-/* Ensure the body background stretches the full viewport so the overlay has something to blend with */
-html.light {
-  background: #0d0e14;
+html.light h1,
+html.light h2,
+html.light h3,
+html.light h4,
+html.light h5,
+html.light h6 {
+  color: #0f172a;
 }
 
-/* Un-invert images, videos, and specific purple elements so they look normal.
-   The overlay will invert them back to their original colours! */
-html.light img,
-html.light video,
-html.light .toggle-switch,
-html.light .save-btn,
-html.light .tag-btn.active {
-  filter: invert(1) hue-rotate(180deg);
+html.light .page-header h1 {
+  color: #0f172a;
+}
+
+html.light .page-header p {
+  color: #64748b;
+}
+
+html.light .navbar {
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom-color: #e2e8f0;
+}
+
+html.light .navbar-logo {
+  color: #0f172a;
+}
+
+html.light .logo-text {
+  background: linear-gradient(135deg, #0f172a 30%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+html.light .nav-item {
+  color: #64748b;
+}
+
+html.light .nav-item:hover {
+  color: #0f172a;
+}
+
+html.light .nav-item.active {
+  color: #7c3aed;
+}
+
+html.light .hamburger .bar {
+  background-color: #0f172a;
 }

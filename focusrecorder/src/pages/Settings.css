@@ -347,3 +347,129 @@ kbd {
   from { opacity: 0; transform: translateX(-50%) translateY(8px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0);   }
 }
+
+/* ── Light Mode overrides for Settings ── */
+html.light .settings-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+html.light .card-title {
+  color: #0f172a;
+}
+
+html.light .setting-row {
+  border-bottom-color: #f1f5f9;
+}
+
+html.light .setting-label {
+  color: #1e293b;
+}
+
+html.light .setting-sub {
+  color: #64748b;
+}
+
+html.light .setting-control select {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+
+html.light .setting-control select:focus {
+  border-color: #7c3aed;
+  background: #ffffff;
+}
+
+html.light .setting-control select option {
+  background: #ffffff;
+  color: #1e293b;
+}
+
+html.light .toggle-switch {
+  background: #cbd5e1;
+  border-color: #cbd5e1;
+}
+
+html.light .toggle-switch.on {
+  background: #7c3aed;
+  border-color: #7c3aed;
+}
+
+html.light .toggle-thumb {
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+html.light kbd {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #6d28d9;
+}
+
+html.light .path-input-group input {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+
+html.light .path-input-group input:focus {
+  border-color: #7c3aed;
+  background: #ffffff;
+}
+
+html.light .browse-btn {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+html.light .browse-btn:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+html.light .storage-bar-header {
+  color: #64748b;
+}
+
+html.light .storage-used {
+  color: #7c3aed;
+}
+
+html.light .storage-bar {
+  background: #e2e8f0;
+}
+
+html.light .danger-card {
+  border-color: #fecaca;
+  background: #fff5f5;
+}
+
+html.light .card-title.danger {
+  color: #dc2626;
+}
+
+html.light .danger-btn {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+html.light .danger-btn:hover {
+  background: #fecaca;
+  border-color: #f87171;
+}
+
+html.light .save-bar {
+  background: rgba(255, 255, 255, 0.92);
+  border-top-color: #e2e8f0;
+  color: #64748b;
+}
+
+html.light .settings-toast {
+  background: rgba(15, 23, 42, 0.96);
+  border-color: rgba(124, 58, 237, 0.5);
+  color: #f8fafc;
+}

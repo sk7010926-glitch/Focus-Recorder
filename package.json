@@ -6,6 +6,12 @@
   "scripts": {
     "dev": "cd focusrecorder && npm run dev",
     "build": "cd focusrecorder && npm run build",
-    "preview": "cd focusrecorder && npm run preview"
+    "preview": "cd focusrecorder && npm run preview",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
   }
 }
