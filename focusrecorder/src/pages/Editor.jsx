@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
+import fixWebmDuration from "fix-webm-duration";
 import { getRecording } from "../services/db";
 import { exportVideo } from "../services/videoExport";
 import "./Editor.css";
@@ -43,8 +44,17 @@ function Editor() {
   const exportCancelRef = useRef({ cancelled: false });
 
   const videoRef = useRef(null);
+  const trackRef = useRef(null);
   const rafRef = useRef(null);
   const hasInitializedClips = useRef(false);
+  const seekIdRef = useRef(0);
+  const isSeekingRef = useRef(false);
+  const resumePlayAfterSeekRef = useRef(false);
+  const isEndedRef = useRef(false);
+  const durationRef = useRef(0);
+  const lastPointerDownTimeRef = useRef(0);
+  const lastSeekTargetRef = useRef(0); // tracks the original-time target of the latest seek
+  const latestSeekTimeRef = useRef(0); // tracks the latest requested seek time for rapid click resolution
 
   const getActiveSegments = useCallback(() => {
     return [...clips].sort((a, b) => a.startTime - b.startTime);
@@ -56,6 +66,7 @@ function Editor() {
 
   const originalTimeToEditedTime = useCallback((origTime) => {
     const active = getActiveSegments();
+    if (active.length === 0) return origTime;
     let edited = 0;
     for (const c of active) {
       if (origTime >= c.startTime && origTime <= c.endTime) {
@@ -72,6 +83,7 @@ function Editor() {
 
   const editedTimeToOriginalTime = useCallback((editedTime) => {
     const active = getActiveSegments();
+    if (active.length === 0) return editedTime;
     let currentEdited = 0;
     for (const c of active) {
       const dur = c.endTime - c.startTime;
@@ -81,7 +93,7 @@ function Editor() {
       currentEdited += dur;
     }
     if (active.length > 0) return active[active.length - 1].endTime;
-    return 0;
+    return editedTime;
   }, [getActiveSegments]);
 
   const findActiveSegmentAtEditedTime = useCallback((editedTime) => {
@@ -103,6 +115,14 @@ function Editor() {
   const activeColors = activeClip?.colorSettings || DEFAULT_COLOR_SETTINGS;
   const videoFilterStyle = `brightness(${activeColors.brightness}%) contrast(${activeColors.contrast}%) saturate(${activeColors.saturation}%) grayscale(${activeColors.grayscale}%)`;
 
+  const parseDurationStr = (durStr) => {
+    if (!durStr) return 0;
+    const parts = durStr.split(":").map(Number);
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return 0;
+  };
+
   // 1. Fetch recording details from IndexedDB
   useEffect(() => {
     if (!recordingId) {
@@ -111,19 +131,36 @@ function Editor() {
     }
 
     let active = true;
-    // Avoid synchronous setState inside effect body
     Promise.resolve().then(() => { setIsLoading(true); setError(null); });
 
     getRecording(recordingId)
-      .then((rec) => {
+      .then(async (rec) => {
         if (!active) return;
         if (!rec) {
           setError("Recording not found in database.");
           setIsLoading(false);
           return;
         }
-        // Create Object URL from the blob
-        const url = URL.createObjectURL(rec.blob);
+        const parsedDur = parseDurationStr(rec.duration);
+        if (parsedDur > 0) {
+          setDuration(parsedDur);
+          durationRef.current = parsedDur;
+        }
+
+        let playableBlob = rec.blob;
+        if (parsedDur > 0 && rec.blob && rec.blob.type && rec.blob.type.includes("webm")) {
+          try {
+            const patched = await fixWebmDuration(rec.blob, Math.round(parsedDur * 1000), { logger: false });
+            if (patched && patched.size > 0) {
+              playableBlob = patched;
+            }
+          } catch (patchErr) {
+            console.warn("Could not patch WebM header duration:", patchErr);
+          }
+        }
+
+        if (!active) return;
+        const url = URL.createObjectURL(playableBlob);
         setRecording(rec);
         setVideoUrl(url);
         setSourceBlob(rec.blob);
@@ -189,15 +226,124 @@ function Editor() {
     return `${m}:${sec}`;
   };
 
-  const parseDurationStr = (durStr) => {
-    if (!durStr) return 0;
-    const parts = durStr.split(":").map(Number);
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return 0;
-  };
+  // ── Central Seeking Function ──
+  const performSeek = useCallback((targetOrigTime, targetEditedTime) => {
+    const vid = videoRef.current;
+    if (!vid) {
+      console.log("[Editor] performSeek EARLY EXIT: no vid");
+      return;
+    }
 
-  // Playback Control Handlers
+    const totalDur = (isFinite(vid.duration) && vid.duration > 0)
+      ? vid.duration
+      : (durationRef.current || duration);
+    if (!totalDur || totalDur <= 0 || !isFinite(totalDur)) return;
+
+    const clampedOrigTime = Math.max(0, Math.min(totalDur, isFinite(targetOrigTime) ? targetOrigTime : 0));
+    const editedDur = getEditedDuration();
+    const clampedEditedTime = Math.max(
+      0,
+      Math.min(
+        editedDur > 0 ? editedDur : totalDur,
+        isFinite(targetEditedTime) ? targetEditedTime : clampedOrigTime
+      )
+    );
+
+    // Determine if video was playing before seek (or is already pending resume from in-flight seek)
+    const wasPlaying = (!vid.paused && !vid.ended) || resumePlayAfterSeekRef.current;
+
+    seekIdRef.current += 1;
+    isSeekingRef.current = true;
+    isEndedRef.current = false;
+    lastSeekTargetRef.current = clampedOrigTime;
+    latestSeekTimeRef.current = clampedOrigTime;
+
+    // Immediately update UI playhead to the latest clicked position for instant feedback
+    setPlayhead(clampedEditedTime);
+
+    if (wasPlaying) {
+      resumePlayAfterSeekRef.current = true;
+      if (!vid.paused) {
+        vid.pause();
+      }
+    } else {
+      resumePlayAfterSeekRef.current = false;
+    }
+
+    // Apply seek to video element
+    try {
+      vid.currentTime = clampedOrigTime;
+    } catch (err) {
+      console.error("Failed to set video.currentTime:", err);
+      isSeekingRef.current = false;
+    }
+  }, [getEditedDuration, duration]);
+
+  // RAF loop for smooth playhead tracking during playback (Rule 12)
+  const stopRaf = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  }, []);
+
+  const startRaf = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    const loop = () => {
+      const vid = videoRef.current;
+      // Do not modify currentTime or playhead if video is seeking or paused
+      if (vid && !vid.paused && !vid.seeking && !isSeekingRef.current) {
+        const origTime = vid.currentTime;
+        const active = getActiveSegments();
+
+        if (active.length === 0) {
+          setPlayhead(0);
+          vid.pause();
+          setIsPlaying(false);
+          return;
+        }
+
+        const activeSeg = active.find(c => origTime >= c.startTime && origTime < c.endTime);
+        if (activeSeg) {
+          setPlayhead(originalTimeToEditedTime(origTime));
+        } else {
+          const lastSeg = active[active.length - 1];
+          if (origTime >= lastSeg.endTime) {
+            vid.pause();
+            setIsPlaying(false);
+            isEndedRef.current = true;
+            setPlayhead(getEditedDuration());
+            return;
+          }
+
+          // Advance across deleted gap to next segment
+          const nextSeg = active.find(c => c.startTime > origTime);
+          if (nextSeg) {
+            vid.currentTime = nextSeg.startTime;
+            setPlayhead(originalTimeToEditedTime(nextSeg.startTime));
+          } else {
+            vid.pause();
+            setIsPlaying(false);
+            isEndedRef.current = true;
+            setPlayhead(getEditedDuration());
+            return;
+          }
+        }
+      }
+
+      if (videoRef.current && !videoRef.current.paused) {
+        rafRef.current = requestAnimationFrame(loop);
+      }
+    };
+    rafRef.current = requestAnimationFrame(loop);
+  }, [getActiveSegments, originalTimeToEditedTime, getEditedDuration]);
+
+  // Cancel rAF on unmount
+  useEffect(() => {
+    return () => stopRaf();
+  }, [stopRaf]);
+
+  // Playback Control Handlers (Rules 14, 15, 23)
   const togglePlay = () => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -207,16 +353,22 @@ function Editor() {
       if (active.length === 0) return;
 
       const editedDur = getEditedDuration();
-      if (playhead >= editedDur) {
+      // Restart if at or near the end
+      const isNearEnd = playhead >= (editedDur > 0 ? editedDur - 0.05 : 0) || isEndedRef.current;
+      if (isNearEnd) {
+        isEndedRef.current = false;
+        performSeek(active[0].startTime, 0);
+        vid.play().catch((err) => console.error("Playback restart failed:", err));
         return;
       }
+      isEndedRef.current = false;
 
       const currentOrigTime = vid.currentTime;
-      let inActiveSeg = active.some(c => currentOrigTime >= c.startTime && currentOrigTime < c.endTime);
+      const inActiveSeg = active.some(c => currentOrigTime >= c.startTime && currentOrigTime < c.endTime);
 
       if (!inActiveSeg) {
         const nextSeg = active.find(c => c.startTime > currentOrigTime) || active[0];
-        vid.currentTime = nextSeg.startTime;
+        performSeek(nextSeg.startTime, originalTimeToEditedTime(nextSeg.startTime));
       }
 
       vid.play().catch((err) => console.error("Playback failed:", err));
@@ -226,42 +378,32 @@ function Editor() {
   };
 
   const handleBackward = () => {
-    const vid = videoRef.current;
-    if (!vid) return;
-    vid.currentTime = Math.max(0, vid.currentTime - 5);
-    setPlayhead(originalTimeToEditedTime(vid.currentTime));
+    const editedDur = getEditedDuration();
+    if (!editedDur) return;
+    const newEdited = Math.max(0, playhead - 5);
+    const newOrig = editedTimeToOriginalTime(newEdited);
+    performSeek(newOrig, newEdited);
   };
 
   const handleForward = () => {
-    const vid = videoRef.current;
-    if (!vid) return;
-    vid.currentTime = Math.min(duration, vid.currentTime + 5);
-    setPlayhead(originalTimeToEditedTime(vid.currentTime));
+    const editedDur = getEditedDuration();
+    if (!editedDur) return;
+    const newEdited = Math.min(editedDur, playhead + 5);
+    const newOrig = editedTimeToOriginalTime(newEdited);
+    performSeek(newOrig, newEdited);
   };
 
   const handleStart = () => {
-    const vid = videoRef.current;
-    if (!vid) return;
     const active = getActiveSegments();
-    if (active.length > 0) {
-      vid.currentTime = active[0].startTime;
-    } else {
-      vid.currentTime = 0;
-    }
-    setPlayhead(0);
+    const target = active.length > 0 ? active[0].startTime : 0;
+    performSeek(target, 0);
   };
 
   const handleEnd = () => {
-    const vid = videoRef.current;
-    if (!vid) return;
     const active = getActiveSegments();
-    if (active.length > 0) {
-      vid.currentTime = active[active.length - 1].endTime;
-      setPlayhead(getEditedDuration());
-    } else {
-      vid.currentTime = duration;
-      setPlayhead(0);
-    }
+    const editedDur = getEditedDuration();
+    const target = active.length > 0 ? active[active.length - 1].endTime : durationRef.current;
+    performSeek(target, editedDur);
   };
 
   const handleVolumeChange = (e) => {
@@ -281,163 +423,218 @@ function Editor() {
     }
   };
 
-  const handleTrackClick = (e) => {
-    const vid = videoRef.current;
-    if (!vid || !duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  // Timeline Pointer / Click Handler
+  const handleTrackClick = useCallback((e) => {
+    // Avoid double seek on click immediately following pointerdown within the same gesture
+    if (performance.now() - lastPointerDownTimeRef.current < 40) return;
 
-    const editedDur = getEditedDuration();
-    const targetEditedTime = ratio * editedDur;
-    const targetOrigTime = editedTimeToOriginalTime(targetEditedTime);
-
-    vid.currentTime = targetOrigTime;
-    setPlayhead(targetEditedTime);
-  };
-
-  const handleTrackPointerDown = (e) => {
-    console.log('[TRACK] handleTrackPointerDown fired, target:', e.target.className);
-    const track = e.currentTarget;
-    const rect = track.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const editedDur = getEditedDuration();
-    const targetEditedTime = ratio * editedDur;
-    const targetOrigTime = editedTimeToOriginalTime(targetEditedTime);
-    if (videoRef.current && duration) {
-      videoRef.current.currentTime = targetOrigTime;
-      setPlayhead(targetEditedTime);
-    }
-  };
-
-  const handlePlayheadPointerDown = (e) => {
-    e.stopPropagation();
-    const track = e.currentTarget.closest('.timeline-track');
+    const track = trackRef.current || e.currentTarget.closest(".timeline-track");
     if (!track) return;
-    const editedDur = getEditedDuration();
-    if (!editedDur) return;
-    stopRaf();
-    if (videoRef.current) videoRef.current.pause();
-    const rect = track.getBoundingClientRect();
-    const onMove = (moveEv) => {
-      const ratio = Math.max(0, Math.min(1, (moveEv.clientX - rect.left) / rect.width));
-      const targetEditedTime = ratio * editedDur;
-      const targetOrigTime = editedTimeToOriginalTime(targetEditedTime);
-      if (videoRef.current) videoRef.current.currentTime = targetOrigTime;
-      setPlayhead(targetEditedTime);
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
+    const vid = videoRef.current;
+    // Use video.duration as primary source of truth for the total timeline duration
+    const totalDur = (vid && isFinite(vid.duration) && vid.duration > 0)
+      ? vid.duration
+      : (durationRef.current || duration);
+    if (!totalDur || totalDur <= 0 || !isFinite(totalDur)) return;
 
-  const stopRaf = useCallback(() => {
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+
+    // Compute raw seek target directly from ratio × totalDur
+    const rawTargetTime = ratio * totalDur;
+
+    // Map through edited segments if they exist, otherwise use rawTargetTime
+    const editedDur = getEditedDuration();
+    const targetEdited = editedDur > 0 ? ratio * editedDur : rawTargetTime;
+    const targetOrig = editedDur > 0 ? editedTimeToOriginalTime(targetEdited) : rawTargetTime;
+
+    const active = getActiveSegments();
+    if (active.length > 0) {
+      const clickedSeg = active.find(c => targetOrig >= c.startTime && targetOrig <= c.endTime)
+        || active.find(c => targetOrig >= c.startTime)
+        || active[0];
+      if (clickedSeg) setSelectedSegmentId(clickedSeg.id);
     }
+
+    performSeek(targetOrig, targetEdited);
+  }, [getEditedDuration, editedTimeToOriginalTime, getActiveSegments, performSeek, duration]);
+
+  const handleTrackPointerDown = useCallback((e) => {
+    lastPointerDownTimeRef.current = performance.now();
+
+    const track = trackRef.current || e.currentTarget.closest(".timeline-track");
+    if (!track) return;
+    const vid = videoRef.current;
+    // Use video.duration as primary source of truth
+    const totalDur = (vid && isFinite(vid.duration) && vid.duration > 0)
+      ? vid.duration
+      : (durationRef.current || duration);
+    if (!totalDur || totalDur <= 0 || !isFinite(totalDur)) return;
+
+    const editedDur = getEditedDuration();
+    const rect = track.getBoundingClientRect();
+
+    const computeTimes = (clientX) => {
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      // Compute raw seek target directly from ratio × totalDur
+      const rawTargetTime = ratio * totalDur;
+      const targetEdited = editedDur > 0 ? ratio * editedDur : rawTargetTime;
+      const targetOrig = editedDur > 0 ? editedTimeToOriginalTime(targetEdited) : rawTargetTime;
+      return { targetEdited, targetOrig };
+    };
+
+    const initial = computeTimes(e.clientX);
+
+    // Select the segment corresponding to this click position
+    const active = getActiveSegments();
+    if (active.length > 0) {
+      const clickedSeg = active.find(c => initial.targetOrig >= c.startTime && initial.targetOrig <= c.endTime)
+        || active.find(c => initial.targetOrig >= c.startTime)
+        || active[0];
+      if (clickedSeg) setSelectedSegmentId(clickedSeg.id);
+    }
+
+    performSeek(initial.targetOrig, initial.targetEdited);
+
+    // Support scrubbing while dragging across the timeline
+    const onMove = (moveEv) => {
+      const coords = computeTimes(moveEv.clientX);
+      if (active.length > 0) {
+        const segAtMove = active.find(c => coords.targetOrig >= c.startTime && coords.targetOrig <= c.endTime);
+        if (segAtMove) setSelectedSegmentId(segAtMove.id);
+      }
+      performSeek(coords.targetOrig, coords.targetEdited);
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [getEditedDuration, editedTimeToOriginalTime, getActiveSegments, performSeek, duration]);
+
+  const handlePlayheadPointerDown = useCallback((e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    handleTrackPointerDown(e);
+  }, [handleTrackPointerDown]);
+
+  // Video Element Event Handlers (Rules 7, 8, 12, 13)
+  const handlePlay = useCallback(() => {
+    setIsPlaying(true);
+    isEndedRef.current = false;
+    startRaf();
+  }, [startRaf]);
+
+  const handlePause = useCallback(() => {
+    if (!resumePlayAfterSeekRef.current) {
+      setIsPlaying(false);
+    }
+    stopRaf();
+    const vid = videoRef.current;
+    if (vid && !isSeekingRef.current && !vid.seeking) {
+      setPlayhead(originalTimeToEditedTime(vid.currentTime));
+    }
+  }, [stopRaf, originalTimeToEditedTime]);
+
+  const handleSeeking = useCallback(() => {
+    isSeekingRef.current = true;
   }, []);
 
-  const startRaf = useCallback(() => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    const loop = () => {
-      if (videoRef.current) {
-        const vid = videoRef.current;
-        const origTime = vid.currentTime;
-        const active = getActiveSegments();
+  const handleSeeked = useCallback(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
 
-        if (active.length === 0) {
-          setPlayhead(0);
-          vid.pause();
-          setIsPlaying(false);
-        } else {
-          const activeSeg = active.find(c => origTime >= c.startTime && origTime < c.endTime);
-          if (activeSeg) {
-            setPlayhead(originalTimeToEditedTime(origTime));
-          } else {
-            const lastSeg = active[active.length - 1];
-            if (origTime >= lastSeg.endTime) {
-              vid.pause();
-              setIsPlaying(false);
-              setPlayhead(getEditedDuration());
-            } else {
-              const nextSeg = active.find(c => origTime < c.startTime);
-              if (nextSeg) {
-                vid.currentTime = nextSeg.startTime;
-                setPlayhead(originalTimeToEditedTime(nextSeg.startTime));
-              } else {
-                vid.pause();
-                setIsPlaying(false);
-                setPlayhead(getEditedDuration());
-              }
-            }
-          }
+    const targetTime = latestSeekTimeRef.current;
+    const currentOrig = vid.currentTime;
+
+    // If a newer seek was requested while this seek was in flight and video hasn't reached it
+    if (Math.abs(currentOrig - targetTime) > 0.05) {
+      if (!vid.seeking) {
+        try {
+          vid.currentTime = targetTime;
+        } catch (err) {
+          console.error("Failed to apply latest seek target:", err);
         }
       }
-
-      if (videoRef.current && !videoRef.current.paused) {
-        rafRef.current = requestAnimationFrame(loop);
-      }
-    };
-    rafRef.current = requestAnimationFrame(loop);
-  }, [getActiveSegments, originalTimeToEditedTime, getEditedDuration]);
-
-  // Cancel rAF on unmount
-  useEffect(() => {
-    return () => stopRaf();
-  }, [stopRaf]);
-
-  // Video Event Handlers
-  const handlePlay = () => {
-    setIsPlaying(true);
-    startRaf();
-  };
-  const handlePause = () => {
-    setIsPlaying(false);
-    stopRaf();
-    if (videoRef.current) {
-      setPlayhead(originalTimeToEditedTime(videoRef.current.currentTime));
+      return;
     }
-  };
-  const handleTimeUpdate = () => {
-    if (videoRef.current && !rafRef.current) {
-      setPlayhead(originalTimeToEditedTime(videoRef.current.currentTime));
+
+    isSeekingRef.current = false;
+    if (isFinite(currentOrig)) {
+      setPlayhead(originalTimeToEditedTime(currentOrig));
     }
-  };
-  const handleVideoEnded = () => {
-    setIsPlaying(false);
-    stopRaf();
-    if (videoRef.current) {
-      setPlayhead(getEditedDuration());
+
+    // Only resume play if the video was playing prior to seek initiation
+    if (resumePlayAfterSeekRef.current) {
+      resumePlayAfterSeekRef.current = false;
+      vid.play().catch((err) => console.error("Playback resume after seek failed:", err));
     }
-  };
-  const handleLoadedMetadata = () => {
+  }, [originalTimeToEditedTime]);
+
+  const handleTimeUpdate = useCallback(() => {
     const vid = videoRef.current;
-    if (vid) {
-      const raw = vid.duration;
-      let vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
-      if (vidDuration === 0 && recording && recording.duration) {
-        vidDuration = parseDurationStr(recording.duration);
-      }
-      setDuration(vidDuration);
-      setPlayhead(originalTimeToEditedTime(vid.currentTime));
-      if (!hasInitializedClips.current && vidDuration > 0) {
-        hasInitializedClips.current = true;
-        const initialSeg = {
-          id: `seg_${Date.now()}`,
-          name: "Segment 1",
-          startTime: 0,
-          endTime: vidDuration,
-          color: "#7c3aed",
-          colorSettings: { ...DEFAULT_COLOR_SETTINGS },
-        };
-        setClips([initialSeg]);
-        setSelectedSegmentId(initialSeg.id);
-      }
+    if (!vid) return;
+    if (isSeekingRef.current || vid.seeking) return;
+    const ct = vid.currentTime;
+    if (isFinite(ct)) {
+      setPlayhead(originalTimeToEditedTime(ct));
     }
-  };
+  }, [originalTimeToEditedTime]);
+
+  const handleVideoEnded = useCallback(() => {
+    setIsPlaying(false);
+    isEndedRef.current = true;
+    stopRaf();
+    setPlayhead(getEditedDuration());
+  }, [stopRaf, getEditedDuration]);
+
+  const handleLoadedMetadata = useCallback(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+
+    const raw = vid.duration;
+    let vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
+    if (vidDuration === 0 && recording && recording.duration) {
+      vidDuration = parseDurationStr(recording.duration);
+    }
+    if (vidDuration > 0) {
+      setDuration(vidDuration);
+      durationRef.current = vidDuration;
+    }
+
+    if (!isSeekingRef.current && !vid.seeking && isFinite(vid.currentTime)) {
+      setPlayhead(originalTimeToEditedTime(vid.currentTime));
+    }
+
+    if (!hasInitializedClips.current && vidDuration > 0) {
+      hasInitializedClips.current = true;
+      const initialSeg = {
+        id: `seg_${Date.now()}`,
+        name: "Segment 1",
+        startTime: 0,
+        endTime: vidDuration,
+        color: "#7c3aed",
+        colorSettings: { ...DEFAULT_COLOR_SETTINGS },
+      };
+      setClips([initialSeg]);
+      setSelectedSegmentId(initialSeg.id);
+    }
+  }, [recording, originalTimeToEditedTime]);
+
+  const handleDurationChange = useCallback((e) => {
+    const raw = e.target.duration;
+    let vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
+    if (vidDuration === 0 && recording && recording.duration) {
+      vidDuration = parseDurationStr(recording.duration);
+    }
+    if (vidDuration > 0) {
+      setDuration(vidDuration);
+      durationRef.current = vidDuration;
+    }
+  }, [recording]);
 
   // ── STAGE 3 EDITING ACTIONS: SPLIT, DELETE, TRIM ──
 
@@ -506,13 +703,9 @@ function Editor() {
 
   // DELETE
   const handleDeleteSegment = () => {
-    console.log('[DELETE] handleDeleteSegment called');
-    console.log('[DELETE] selectedSegmentId:', selectedSegmentId);
-    console.log('[DELETE] clips at delete time:', clips.map(c => ({ id: c.id, name: c.name })));
-    if (!selectedSegmentId) { console.log('[DELETE] EARLY EXIT: no selectedSegmentId'); return; }
+    if (!selectedSegmentId) return;
     const targetSeg = clips.find((c) => c.id === selectedSegmentId);
-    if (!targetSeg) { console.log('[DELETE] EARLY EXIT: targetSeg not found in clips'); return; }
-    console.log('[DELETE] Will confirm delete of:', targetSeg.name);
+    if (!targetSeg) return;
 
     const confirmDelete = window.confirm(
       `Are you sure you want to delete "${targetSeg.name}"?`
@@ -521,14 +714,28 @@ function Editor() {
 
     const deletedIndex = clips.findIndex((c) => c.id === selectedSegmentId);
     const updated = clips.filter((c) => c.id !== selectedSegmentId);
-    console.log('[DELETE] updated clips after filter:', updated.map(c => ({ id: c.id, name: c.name })));
     setClips(updated);
 
     if (updated.length > 0) {
       const nextSelect = updated[Math.min(deletedIndex, updated.length - 1)];
       setSelectedSegmentId(nextSelect.id);
+      const vid = videoRef.current;
+      if (vid) {
+        const curOrig = vid.currentTime;
+        const inRemaining = updated.some((c) => curOrig >= c.startTime && curOrig < c.endTime);
+        if (!inRemaining) {
+          performSeek(nextSelect.startTime, 0);
+        } else {
+          setPlayhead(originalTimeToEditedTime(curOrig));
+        }
+      }
     } else {
       setSelectedSegmentId(null);
+      setPlayhead(0);
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+      }
     }
   };
 
@@ -570,39 +777,35 @@ function Editor() {
 
   // TRIM HANDLERS
   const handleTrimStart = (id, newStart) => {
+    const totalDur = durationRef.current || duration;
     setClips((prevClips) =>
       prevClips.map((c) => {
         if (c.id !== id) return c;
         let validStart = newStart;
         if (validStart < 0) validStart = 0;
         if (validStart >= c.endTime - 0.1) validStart = c.endTime - 0.1;
-        if (validStart > duration) validStart = duration;
+        if (totalDur > 0 && validStart > totalDur) validStart = totalDur;
         return { ...c, startTime: validStart };
       })
     );
-    if (videoRef.current) {
-      const safeStart = Math.max(0, newStart);
-      videoRef.current.currentTime = safeStart;
-      setPlayhead(originalTimeToEditedTime(safeStart));
-    }
+    const safeStart = Math.max(0, newStart);
+    performSeek(safeStart, originalTimeToEditedTime(safeStart));
   };
 
   const handleTrimEnd = (id, newEnd) => {
+    const totalDur = durationRef.current || duration;
     setClips((prevClips) =>
       prevClips.map((c) => {
         if (c.id !== id) return c;
         let validEnd = newEnd;
-        if (validEnd > duration) validEnd = duration;
+        if (totalDur > 0 && validEnd > totalDur) validEnd = totalDur;
         if (validEnd <= c.startTime + 0.1) validEnd = c.startTime + 0.1;
         if (validEnd < 0) validEnd = 0;
         return { ...c, endTime: validEnd };
       })
     );
-    if (videoRef.current) {
-      const safeEnd = Math.min(duration, newEnd);
-      videoRef.current.currentTime = safeEnd;
-      setPlayhead(originalTimeToEditedTime(safeEnd));
-    }
+    const safeEnd = totalDur > 0 ? Math.min(totalDur, newEnd) : newEnd;
+    performSeek(safeEnd, originalTimeToEditedTime(safeEnd));
   };
 
   // VISUAL TRIM DRAG HANDLES ON TIMELINE
@@ -624,23 +827,20 @@ function Editor() {
       const deltaX = moveEv.clientX - initialClientX;
       const deltaEditedTime = initialEditedDuration > 0 ? (deltaX / rect.width) * initialEditedDuration : 0;
 
-      setClips((prevClips) =>
-        prevClips.map((c) => {
-          if (c.id !== clip.id) return c;
-
-          if (handleType === "start") {
-            const validStart = Math.max(0, Math.min(initialStartTime + deltaEditedTime, c.endTime - 0.1));
-            if (vid) vid.currentTime = validStart;
-            setPlayhead(originalTimeToEditedTime(validStart));
-            return { ...c, startTime: validStart };
-          } else {
-            const validEnd = Math.max(c.startTime + 0.1, Math.min(initialEndTime + deltaEditedTime, duration));
-            if (vid) vid.currentTime = validEnd;
-            setPlayhead(originalTimeToEditedTime(validEnd));
-            return { ...c, endTime: validEnd };
-          }
-        })
-      );
+      if (handleType === "start") {
+        const validStart = Math.max(0, Math.min(initialStartTime + deltaEditedTime, clip.endTime - 0.1));
+        setClips((prevClips) =>
+          prevClips.map((c) => (c.id === clip.id ? { ...c, startTime: validStart } : c))
+        );
+        performSeek(validStart, originalTimeToEditedTime(validStart));
+      } else {
+        const totalDur = durationRef.current || duration;
+        const validEnd = Math.max(clip.startTime + 0.1, Math.min(initialEndTime + deltaEditedTime, totalDur > 0 ? totalDur : initialEndTime + deltaEditedTime));
+        setClips((prevClips) =>
+          prevClips.map((c) => (c.id === clip.id ? { ...c, endTime: validEnd } : c))
+        );
+        performSeek(validEnd, originalTimeToEditedTime(validEnd));
+      }
     };
 
     const onPointerUp = () => {
@@ -727,16 +927,11 @@ function Editor() {
                 preload="auto"
                 onPlay={handlePlay}
                 onPause={handlePause}
+                onSeeking={handleSeeking}
+                onSeeked={handleSeeked}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
-                onDurationChange={(e) => {
-                  const raw = e.target.duration;
-                  let vidDuration = isFinite(raw) && raw > 0 ? raw : 0;
-                  if (vidDuration === 0 && recording && recording.duration) {
-                    vidDuration = parseDurationStr(recording.duration);
-                  }
-                  if (vidDuration > 0) setDuration(vidDuration);
-                }}
+                onDurationChange={handleDurationChange}
                 onEnded={handleVideoEnded}
               />
             ) : (
@@ -888,7 +1083,12 @@ function Editor() {
               </div>
             )}
 
-            <div className="timeline-track" onClick={handleTrackClick} onPointerDown={handleTrackPointerDown}>
+            <div
+              ref={trackRef}
+              className="timeline-track"
+              onClick={handleTrackClick}
+              onPointerDown={handleTrackPointerDown}
+            >
               {/* Empty state if all segments deleted */}
               {clips.length === 0 ? (
                 <div className="timeline-empty-msg">
@@ -921,14 +1121,7 @@ function Editor() {
                         width: `${widthPct}%`,
                         background: clip.color || "#7c3aed",
                       }}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        console.log('[SELECT] onPointerDown clip:', clip.id, clip.name);
-                        setSelectedSegmentId(clip.id);
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        console.log('[SELECT] onClick clip:', clip.id, clip.name);
+                      onPointerDown={() => {
                         setSelectedSegmentId(clip.id);
                       }}
                     >
@@ -966,7 +1159,7 @@ function Editor() {
             </div>
 
             {/* Time ruler — dynamic marks based on actual duration */}
-            <div className="time-ruler">
+            <div className="time-ruler" onClick={handleTrackClick} onPointerDown={handleTrackPointerDown} style={{ cursor: "pointer" }}>
               {getEditedDuration() > 0
                 ? Array.from({ length: 9 }, (_, i) => (
                   <span key={i} style={{ left: `${(i / 8) * 100}%` }}>
