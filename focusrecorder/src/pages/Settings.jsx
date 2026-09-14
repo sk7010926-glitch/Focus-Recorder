@@ -249,9 +249,6 @@ function Settings() {
             <SettingRow label="Launch on startup" sub="Requires desktop application (browser sandbox limitation)">
               <Toggle value={settings.startOnBoot} onChange={(v) => set("startOnBoot", v)} />
             </SettingRow>
-            <SettingRow label="Hardware acceleration" sub="Controlled by browser settings (saved for app config)">
-              <Toggle value={settings.hardwareAccel} onChange={(v) => set("hardwareAccel", v)} />
-            </SettingRow>
           </div>
         </section>
 
