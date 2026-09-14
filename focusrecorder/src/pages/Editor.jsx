@@ -55,6 +55,7 @@ function Editor() {
   const lastPointerDownTimeRef = useRef(0);
   const lastSeekTargetRef = useRef(0); // tracks the original-time target of the latest seek
   const latestSeekTimeRef = useRef(0); // tracks the latest requested seek time for rapid click resolution
+  const seekRetryCountRef = useRef(0);
 
   const getActiveSegments = useCallback(() => {
     return [...clips].sort((a, b) => a.startTime - b.startTime);
@@ -148,7 +149,7 @@ function Editor() {
         }
 
         let playableBlob = rec.blob;
-        if (parsedDur > 0 && rec.blob && rec.blob.type && rec.blob.type.includes("webm")) {
+        if (rec.blob) {
           try {
             const patched = await fixWebmDuration(rec.blob, Math.round(parsedDur * 1000), { logger: false });
             if (patched && patched.size > 0) {
@@ -163,7 +164,7 @@ function Editor() {
         const url = URL.createObjectURL(playableBlob);
         setRecording(rec);
         setVideoUrl(url);
-        setSourceBlob(rec.blob);
+        setSourceBlob(playableBlob);
         setIsLoading(false);
       })
       .catch((err) => {
@@ -234,10 +235,10 @@ function Editor() {
       return;
     }
 
-    const totalDur = (isFinite(vid.duration) && vid.duration > 0)
+    const totalDur = (vid.duration > 0 && vid.duration !== Infinity)
       ? vid.duration
       : (durationRef.current || duration);
-    if (!totalDur || totalDur <= 0 || !isFinite(totalDur)) return;
+    if (!totalDur || totalDur <= 0) return;
 
     const clampedOrigTime = Math.max(0, Math.min(totalDur, isFinite(targetOrigTime) ? targetOrigTime : 0));
     const editedDur = getEditedDuration();
@@ -546,28 +547,12 @@ function Editor() {
   const handleSeeked = useCallback(() => {
     const vid = videoRef.current;
     if (!vid) return;
-
-    const targetTime = latestSeekTimeRef.current;
-    const currentOrig = vid.currentTime;
-
-    // If a newer seek was requested while this seek was in flight and video hasn't reached it
-    if (Math.abs(currentOrig - targetTime) > 0.05) {
-      if (!vid.seeking) {
-        try {
-          vid.currentTime = targetTime;
-        } catch (err) {
-          console.error("Failed to apply latest seek target:", err);
-        }
-      }
-      return;
-    }
-
     isSeekingRef.current = false;
+    seekRetryCountRef.current = 0;
+    const currentOrig = vid.currentTime;
     if (isFinite(currentOrig)) {
       setPlayhead(originalTimeToEditedTime(currentOrig));
     }
-
-    // Only resume play if the video was playing prior to seek initiation
     if (resumePlayAfterSeekRef.current) {
       resumePlayAfterSeekRef.current = false;
       vid.play().catch((err) => console.error("Playback resume after seek failed:", err));
