@@ -30,7 +30,7 @@ const FEATURES = [
   {
     icon: "⚡",
     title: "Instant Export",
-    desc: "Export in MP4, WebM, or GIF in seconds. Share a link or save locally — your choice.",
+    desc: "Export in standard MP4 in seconds. Share a link or save locally — your choice.",
   },
 ];
 

@@ -15,7 +15,7 @@ export const DEFAULT_SETTINGS = {
   // Recording
   recordingQuality: "1080p",   // "720p" | "1080p" | "4K"
   fps:              30,        // 24 | 30 | 60  (number, not string)
-  saveFormat:       "webm",    // "webm" (only selectable for now)
+  saveFormat:       "mp4",     // "mp4" | "webm"
 
   // Devices — stored as deviceId strings; "" = OS default
   microphoneId:     "",

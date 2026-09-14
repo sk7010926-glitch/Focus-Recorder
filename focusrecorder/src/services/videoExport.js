@@ -25,9 +25,14 @@ const RESOLUTION_MAP = {
   "4k": { w: 3840, h: 2160 },
 };
 
-/** Pick the best WebM MIME type supported by this browser */
+/** Pick the best supported MIME type for MediaRecorder, prioritizing native MP4 */
 function pickMimeType() {
   const candidates = [
+    "video/mp4;codecs=avc1,mp4a.40.2",
+    "video/mp4;codecs=avc1,opus",
+    "video/mp4;codecs=h264,aac",
+    "video/mp4;codecs=avc1",
+    "video/mp4",
     "video/webm;codecs=vp9,opus",
     "video/webm;codecs=vp8,opus",
     "video/webm",
@@ -37,7 +42,7 @@ function pickMimeType() {
       return m;
     }
   }
-  return "video/webm";
+  return "video/mp4";
 }
 
 /** Reads EBML variable-length integer (VINT) for SIZE fields — strips marker bit */
@@ -611,27 +616,28 @@ export async function exportVideo({
       throw new Error("Export produced an empty file. Canvas capture was blocked or video was too short.");
     }
 
-    // ── 9. Fix WebM Duration Header via Direct EBML Binary Patcher ──
-    const actualDurationMs = Math.round(totalDuration * 1000);
+    // ── 9. Fix WebM Duration Header via Direct EBML Binary Patcher (WebM only) ──
     let outputBlob = rawBlob;
-
-    try {
-      const arrayBuffer = await rawBlob.arrayBuffer();
-      const directPatched = setWebmDuration(arrayBuffer, actualDurationMs);
-      if (directPatched && directPatched.size > 0) {
-        outputBlob = directPatched;
-        console.log(`[Export] Direct EBML duration patch applied: ${actualDurationMs}ms`);
-      } else {
-        // Fallback to npm package if custom EBML structure parser didn't find segment
-        const npmFixed = await fixWebmDuration(rawBlob, actualDurationMs, { logger: false });
-        if (npmFixed && npmFixed.size > 0) {
-          outputBlob = npmFixed;
-          console.log(`[Export] npm fix-webm-duration fallback applied: ${actualDurationMs}ms`);
+    if (mimeType.includes("webm")) {
+      const actualDurationMs = Math.round(totalDuration * 1000);
+      try {
+        const arrayBuffer = await rawBlob.arrayBuffer();
+        const directPatched = setWebmDuration(arrayBuffer, actualDurationMs);
+        if (directPatched && directPatched.size > 0) {
+          outputBlob = directPatched;
+          console.log(`[Export] Direct EBML duration patch applied: ${actualDurationMs}ms`);
+        } else {
+          // Fallback to npm package if custom EBML structure parser didn't find segment
+          const npmFixed = await fixWebmDuration(rawBlob, actualDurationMs, { logger: false });
+          if (npmFixed && npmFixed.size > 0) {
+            outputBlob = npmFixed;
+            console.log(`[Export] npm fix-webm-duration fallback applied: ${actualDurationMs}ms`);
+          }
         }
+      } catch (fixErr) {
+        console.warn("[Export] Duration header patch failed:", fixErr.message);
+        outputBlob = rawBlob;
       }
-    } catch (fixErr) {
-      console.warn("[Export] Duration header patch failed:", fixErr.message);
-      outputBlob = rawBlob;
     }
 
     onProgress(100);

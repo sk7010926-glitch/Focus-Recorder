@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { saveRecording } from "../services/db";
 import fixWebmDuration from "fix-webm-duration";
 import { loadSettings } from "../services/settings";
+import { convertToMp4, preloadFFmpeg } from "../utils/mp4Converter";
 
 const QUALITY_MAP = {
   "720p": { width: 1280, height: 720, bitrate: 6_000_000 },
@@ -21,21 +22,29 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Pick the best supported MIME type for MediaRecorder based on presence of audio tracks. */
+/** Pick the best supported MIME type for MediaRecorder, prioritizing native MP4 (H.264/AVC). */
 function getBestMimeType(hasAudio = true) {
   const candidatesWithAudio = [
+    "video/mp4;codecs=avc1,mp4a.40.2",
+    "video/mp4;codecs=avc1,opus",
+    "video/mp4;codecs=h264,aac",
+    "video/mp4;codecs=avc1",
+    "video/mp4",
     "video/webm;codecs=vp9,opus",
     "video/webm;codecs=vp8,opus",
     "video/webm",
   ];
   const candidatesVideoOnly = [
+    "video/mp4;codecs=avc1",
+    "video/mp4;codecs=h264",
+    "video/mp4",
     "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm",
   ];
   const candidates = hasAudio ? candidatesWithAudio : candidatesVideoOnly;
   for (const mime of candidates) {
-    if (MediaRecorder.isTypeSupported(mime)) return mime;
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(mime)) return mime;
   }
   return "";
 }
@@ -713,6 +722,9 @@ export function useRecorder() {
     recordingStartTimeRef.current = null;
     recordingStopTimeRef.current = null;
 
+    // Preload FFmpeg in background while recording so it is warm and instant on stop
+    preloadFFmpeg();
+
     try {
       const targetFps = fps || 30;
       const qConfig = QUALITY_MAP[quality] || QUALITY_MAP["1080p"];
@@ -1012,30 +1024,28 @@ export function useRecorder() {
           // Use the wall-clock stop time captured at the exact moment stop() was requested,
           // NOT Date.now() here — onstop fires asynchronously after a variable delay.
           const stopTime = recordingStopTimeRef.current || Date.now();
-          const wallClockMs = Math.max(0, stopTime - startTime);
-
-          const rawBlob = new Blob(chunksRef.current, { type: mimeType || "video/webm" });
-          const arrayBuffer = await rawBlob.arrayBuffer();
-
-          // PRIMARY: The active recording timer — accumulated only during active recording,
-          // pause-aware, finalized by stopTimer() before onstop fires.
           const activeRecordingMs = accumulatedMsRef.current;
+          const durationMs = activeRecordingMs > 0 ? activeRecordingMs : wallClockMs;
 
-          // FALLBACK: WebM cluster analysis (may be inaccurate for Chrome recordings)
-          const realDurationMs = getWebmDurationFromClusters(arrayBuffer);
+          const rawBlob = new Blob(chunksRef.current, { type: mimeType || "video/mp4" });
+          const isNativeMp4 = (mimeType && mimeType.includes("mp4")) || (rawBlob.type && rawBlob.type.includes("mp4"));
 
-          // Priority: active timer > WebM clusters > wall clock (wall clock includes pauses)
-          const durationMs = activeRecordingMs > 0
-            ? activeRecordingMs
-            : realDurationMs > 0
-              ? realDurationMs
-              : wallClockMs;
+          // Only patch WebM EBML header if recorded as WebM
+          let sourceBlob = rawBlob;
+          if (!isNativeMp4) {
+            sourceBlob = await fixDuration(rawBlob, durationMs);
+          }
 
-          console.log(`[FocusRecorder] Total Chunks: ${chunksRef.current.length}, Raw Size: ${formatBytes(rawBlob.size)}, Exact Duration: ${durationMs}ms`);
+          console.log(`[FocusRecorder] Recorded ${formatBytes(sourceBlob.size)} (${mimeType || "video/mp4"}), finalizing MP4...`);
 
-          // Patch WebM header EBML duration metadata using proper Promise wrapper around fix-webm-duration
-          const finalBlob = await fixDuration(rawBlob, durationMs);
-          console.log(`[FocusRecorder] Fixed WebM Blob Size: ${formatBytes(finalBlob.size)}`);
+          // Finalize into clean indexed MP4 (+faststart for instant random seeking)
+          let finalBlob = sourceBlob;
+          try {
+            finalBlob = await convertToMp4(sourceBlob);
+            console.log(`[FocusRecorder] Final MP4 ready: ${formatBytes(finalBlob.size)}`);
+          } catch (convErr) {
+            console.warn("[FocusRecorder] MP4 finalize notice, using recorded blob:", convErr);
+          }
 
           const durationSecs = Math.round(durationMs / 1000);
           const durationStr = formatTime(durationSecs);
@@ -1044,13 +1054,15 @@ export function useRecorder() {
           const tagMode = captureMode === "window" ? "Window" : captureMode === "browser" ? "Tab" : "Screen";
           const title = `${tagMode} Recording — ${date}`;
 
+          // Save MP4 blob into database for instant playback and smooth seeking
           await saveRecording({ title, blob: finalBlob, duration: durationStr, date, size: sizeStr, tag: tagMode });
           console.log(`[FocusRecorder] Saved video (${durationStr}, ${sizeStr}) successfully.`);
 
+          // Trigger download as .mp4
           const url = URL.createObjectURL(finalBlob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = `focusrecorder-${Date.now()}.webm`;
+          a.download = `focusrecorder-${Date.now()}.mp4`;
           a.click();
           setTimeout(() => URL.revokeObjectURL(url), 60_000);
           setStatus("completed");

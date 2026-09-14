@@ -291,13 +291,9 @@ function Settings() {
               </select>
             </SettingRow>
 
-            <SettingRow label="Default save format">
-              <select
-                value={settings.saveFormat}
-                onChange={(e) => set("saveFormat", e.target.value)}
-              >
-                <option value="webm">WebM</option>
-                <option value="mp4" disabled>MP4 (Coming Soon)</option>
+            <SettingRow label="Default save format" sub="All recordings are saved and exported as MP4 (H.264 + AAC)">
+              <select value="mp4" disabled>
+                <option value="mp4">MP4 (H.264 + AAC)</option>
               </select>
             </SettingRow>
           </div>

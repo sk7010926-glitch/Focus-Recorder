@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { getAllRecordings, deleteRecording, updateRecording } from "../services/db";
+import { convertToMp4 } from "../utils/mp4Converter";
 import "./Library.css";
 
 const TAGS = ["All", "Demo", "Meeting", "Tutorial", "Debug", "Review", "Screen"];
@@ -327,13 +328,45 @@ function Library() {
     if (blobUrls[rec.id]) setPlayRec(rec);
   }, [blobUrls]);
 
-  const handleDownload = useCallback((rec) => {
-    const url = blobUrls[rec.id];
-    if (!url) return;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${rec.title}.webm`;
-    a.click();
+  const [convertingIds, setConvertingIds] = useState({});
+
+  const handleDownload = useCallback(async (rec) => {
+    if (!rec.blob) return;
+
+    const baseTitle = (rec.title || "recording").replace(/\.(mp4|webm)$/i, "");
+
+    // If already an MP4 blob, download instantly
+    if (rec.blob.type === "video/mp4") {
+      const url = blobUrls[rec.id] || URL.createObjectURL(rec.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseTitle}.mp4`;
+      a.click();
+      return;
+    }
+
+    // For any older legacy WebM recording, convert to MP4
+    setConvertingIds((prev) => ({ ...prev, [rec.id]: true }));
+    try {
+      const mp4Blob = await convertToMp4(rec.blob);
+      const url = URL.createObjectURL(mp4Blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseTitle}.mp4`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (err) {
+      console.error("[Library] MP4 conversion failed:", err);
+      const fallbackUrl = blobUrls[rec.id];
+      if (fallbackUrl) {
+        const a = document.createElement("a");
+        a.href = fallbackUrl;
+        a.download = `${baseTitle}.mp4`;
+        a.click();
+      }
+    } finally {
+      setConvertingIds((prev) => { const next = { ...prev }; delete next[rec.id]; return next; });
+    }
   }, [blobUrls]);
 
   const handleDelete = useCallback(async (id) => {
@@ -490,7 +523,8 @@ function Library() {
                 </button>
                 <button
                   className="card-btn"
-                  title="Download"
+                  title={convertingIds[rec.id] ? "Converting to MP4…" : "Download MP4"}
+                  disabled={!!convertingIds[rec.id]}
                   onClick={() => handleDownload(rec)}
                 >
                   ⬇️

@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import fixWebmDuration from "fix-webm-duration";
 import { getRecording } from "../services/db";
 import { exportVideo } from "../services/videoExport";
+import { convertToMp4 } from "../utils/mp4Converter";
 import "./Editor.css";
 
 const DEFAULT_COLOR_SETTINGS = {
@@ -39,6 +40,7 @@ function Editor() {
   const [exportResolution, setExportResolution] = useState("1080");
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [mp4ConvertProgress, setMp4ConvertProgress] = useState(0);
   const [exportError, setExportError] = useState(null);
   const [exportSuccess, setExportSuccess] = useState(null); // filename string on success
   const exportCancelRef = useRef({ cancelled: false });
@@ -149,7 +151,7 @@ function Editor() {
         }
 
         let playableBlob = rec.blob;
-        if (rec.blob) {
+        if (rec.blob && rec.blob.type !== "video/mp4") {
           try {
             const patched = await fixWebmDuration(rec.blob, Math.round(parsedDur * 1000), { logger: false });
             if (patched && patched.size > 0) {
@@ -1244,9 +1246,8 @@ function Editor() {
             <h3 className="panel-title">Export</h3>
             <div className="prop-group">
               <label>Format</label>
-              <select value="webm" disabled title="Browser MediaRecorder only supports WebM output">
-                <option value="webm">WebM (VP9/VP8 + Opus) ✓</option>
-                <option value="mp4" disabled>MP4 — not supported in browser</option>
+              <select value="mp4" disabled title="Exported as MP4 (H.264 + AAC) via FFmpeg.wasm">
+                <option value="mp4">MP4 (H.264 + AAC) ✓</option>
               </select>
             </div>
             <div className="prop-group">
@@ -1300,6 +1301,7 @@ function Editor() {
                 }
                 setIsExporting(true);
                 setExportProgress(0);
+                setMp4ConvertProgress(0);
                 setExportError(null);
                 setExportSuccess(null);
                 // Create a fresh cancel ref for this export run
@@ -1308,19 +1310,29 @@ function Editor() {
 
                 const freshUrl = URL.createObjectURL(sourceBlob);
                 try {
-                  const { blob } = await exportVideo({
+                  // Phase 1: Re-encode via Canvas+MediaRecorder (WebM)
+                  const { blob: webmBlob } = await exportVideo({
                     sourceUrl: freshUrl,
                     segments: clips,
                     colorSettings: DEFAULT_COLOR_SETTINGS,
                     resolution: exportResolution,
-                    onProgress: setExportProgress,
+                    onProgress: (p) => setExportProgress(Math.round(p * 0.6)), // 0→60%
                     cancelRef: cancelToken,
                   });
-                  const ext = "webm";
+
+                  if (cancelToken.cancelled) return;
+
+                  // Phase 2: Convert WebM → MP4 via FFmpeg.wasm
+                  const mp4Blob = await convertToMp4(webmBlob, (p) => {
+                    setExportProgress(60 + Math.round(p * 0.4)); // 60→100%
+                    setMp4ConvertProgress(p);
+                  });
+
+                  const ext = "mp4";
                   const baseName = (recording?.title || "export").replace(/[^a-z0-9_-]/gi, "_");
                   const filename = `${baseName}_edited.${ext}`;
                   // Trigger download
-                  const dlUrl = URL.createObjectURL(blob);
+                  const dlUrl = URL.createObjectURL(mp4Blob);
                   const a = document.createElement("a");
                   a.href = dlUrl;
                   a.download = filename;
@@ -1342,7 +1354,7 @@ function Editor() {
               }}
               style={clips.length === 0 || !sourceBlob ? { opacity: 0.4, cursor: "not-allowed" } : {}}
             >
-              {isExporting ? "⏳ Exporting…" : "⬇ Export Video (.webm)"}
+              {isExporting ? `⏳ Exporting… ${exportProgress}%` : "⬇ Export Video (.mp4)"}
             </button>
 
             {isExporting && (
@@ -1361,7 +1373,7 @@ function Editor() {
             )}
 
             <div className="export-notice">
-              ℹ️ Re-encodes via Canvas + MediaRecorder (WebM/VP9). Applies split, trim, deletes &amp; color filters. Original recording is never modified.
+              ℹ️ Phase 1: Re-encodes via Canvas + MediaRecorder. Phase 2: Converts to real MP4 (H.264 + AAC) via FFmpeg.wasm. Applies split, trim, deletes &amp; color filters. Original recording is never modified.
             </div>
           </div>
         </div>

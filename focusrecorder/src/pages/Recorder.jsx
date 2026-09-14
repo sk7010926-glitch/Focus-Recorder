@@ -8,7 +8,7 @@ const STATUS_META = {
   requesting: { label: "Requesting permission…", cls: "requesting" },
   recording: { label: "Recording in progress…", cls: "recording" },
   paused: { label: "Recording paused", cls: "paused" },
-  saving: { label: "Saving recording…", cls: "saving" },
+  saving: { label: "Converting to MP4 & Saving…", cls: "saving" },
   completed: { label: "Completed", cls: "completed" },
 };
 
