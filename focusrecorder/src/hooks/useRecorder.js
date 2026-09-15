@@ -500,6 +500,9 @@ export function useRecorder() {
   const [warning, setWarning] = useState(null);
   const [camReady, setCamReady] = useState(true);
 
+  // Pending recording when autoSave is off
+  const [pendingRecording, setPendingRecording] = useState(null);
+
   const camInitPromiseRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -1053,6 +1056,7 @@ export function useRecorder() {
           // Use the wall-clock stop time captured at the exact moment stop() was requested,
           // NOT Date.now() here — onstop fires asynchronously after a variable delay.
           const stopTime = recordingStopTimeRef.current || Date.now();
+          const wallClockMs = stopTime - startTime;
           const activeRecordingMs = accumulatedMsRef.current;
           const durationMs = activeRecordingMs > 0 ? activeRecordingMs : wallClockMs;
 
@@ -1083,18 +1087,32 @@ export function useRecorder() {
           const tagMode = captureMode === "window" ? "Window" : captureMode === "browser" ? "Tab" : "Screen";
           const title = `${tagMode} Recording — ${date}`;
 
-          // Save MP4 blob into database for instant playback and smooth seeking
-          await saveRecording({ title, blob: finalBlob, duration: durationStr, date, size: sizeStr, tag: tagMode });
-          console.log(`[FocusRecorder] Saved video (${durationStr}, ${sizeStr}) successfully.`);
+          const currentSettings = loadSettings();
+          const recordData = { title, blob: finalBlob, duration: durationStr, date, size: sizeStr, tag: tagMode };
 
-          // Trigger download as .mp4
-          const url = URL.createObjectURL(finalBlob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `focusrecorder-${Date.now()}.mp4`;
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(url), 60_000);
-          setStatus("completed");
+          if (currentSettings.autoSave === false) {
+            console.log("[FocusRecorder] Auto-save disabled, holding in memory for user decision.");
+            setPendingRecording({ recordData, finalBlob });
+            setStatus("completed");
+          } else {
+            // Save MP4 blob into database for instant playback and smooth seeking
+            await saveRecording(recordData);
+            console.log(`[FocusRecorder] Saved video (${durationStr}, ${sizeStr}) successfully.`);
+
+            // Trigger Desktop Notification if enabled
+            if (currentSettings.notifications && typeof Notification !== "undefined" && Notification.permission === "granted") {
+              try { new Notification("FocusRecorder", { body: "Recording saved to Library!" }); } catch (e) { /* ignore */ }
+            }
+
+            // Trigger download as .mp4
+            const url = URL.createObjectURL(finalBlob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `focusrecorder-${Date.now()}.mp4`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 60_000);
+            setStatus("completed");
+          }
         } catch (saveErr) {
           console.error("[FocusRecorder] Save failed:", saveErr);
           setError(`Failed to save recording: ${saveErr.message}`);
@@ -1178,6 +1196,39 @@ export function useRecorder() {
   const stopRecording = useCallback(() => {
     handleShareEnded();
   }, [handleShareEnded]);
+
+  // ── Manual Save/Discard ───────────────────────────────────────────────────
+  const savePendingRecording = useCallback(async () => {
+    if (!pendingRecording) return;
+    setStatus("saving");
+    try {
+      const currentSettings = loadSettings();
+      await saveRecording(pendingRecording.recordData);
+      
+      if (currentSettings.notifications && typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try { new Notification("FocusRecorder", { body: "Recording saved to Library!" }); } catch (e) { /* ignore */ }
+      }
+
+      const url = URL.createObjectURL(pendingRecording.finalBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `focusrecorder-${Date.now()}.mp4`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      
+      setPendingRecording(null);
+      setStatus("completed");
+    } catch (saveErr) {
+      console.error("Manual save failed:", saveErr);
+      setError(`Failed to save: ${saveErr.message}`);
+      setStatus("completed");
+    }
+  }, [pendingRecording]);
+
+  const discardPendingRecording = useCallback(() => {
+    setPendingRecording(null);
+    setStatus("idle");
+  }, []);
 
   // ── Keyboard Shortcuts (Custom Events from GlobalShortcuts) ───────────────
   // We read functions via refs so this effect never needs to re-run.
@@ -1285,5 +1336,8 @@ export function useRecorder() {
     resumeRecording,
     stopRecording,
     setPipRect: (rect) => { pipRectRef.current = rect; },
+    pendingRecording,
+    savePendingRecording,
+    discardPendingRecording,
   };
 }

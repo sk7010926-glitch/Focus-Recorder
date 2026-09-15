@@ -30,7 +30,7 @@ export const DEFAULT_SETTINGS = {
   clickHighlight:   false,
 
   // Storage
-  savePath:         "~/Documents/FocusRecorder",
+  // savePath removed: browser standard downloads used
 
   // Keyboard shortcuts (matched by real keydown listeners in useRecorder)
   shortcutStart:    "Ctrl + Shift + R",

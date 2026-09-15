@@ -162,24 +162,6 @@ function Settings() {
     }
   }, [set, showToast]);
 
-  const handleBrowse = useCallback(async () => {
-    if (typeof window !== "undefined" && "showDirectoryPicker" in window) {
-      try {
-        const dirHandle = await window.showDirectoryPicker();
-        if (dirHandle && dirHandle.name) {
-          set("savePath", dirHandle.name);
-          showToast(`Selected save folder: ${dirHandle.name}`);
-        }
-      } catch (err) {
-        if (err.name !== "AbortError") {
-          showToast("Could not access directory.");
-        }
-      }
-    } else {
-      showToast("Directory picker not supported in this browser. Downloads will use default browser directory.");
-    }
-  }, [set, showToast]);
-
   const handleSave = useCallback(() => {
     saveSettings(settings);
     showToast("Settings saved successfully.");
@@ -334,15 +316,10 @@ function Settings() {
         <section className="settings-card">
           <h2 className="card-title">💾 Storage</h2>
           <div className="settings-list">
-            <SettingRow label="Save location" sub="Where recordings will be saved (browser downloads use default folder)">
-              <div className="path-input-group">
-                <input
-                  type="text"
-                  value={settings.savePath}
-                  onChange={(e) => set("savePath", e.target.value)}
-                />
-                <button className="browse-btn" type="button" onClick={handleBrowse}>Browse</button>
-              </div>
+            <SettingRow label="Save location">
+              <span style={{ color: "#9ca3af", fontSize: "0.95rem" }}>
+                Recordings are saved to your browser's default Downloads folder.
+              </span>
             </SettingRow>
           </div>
 

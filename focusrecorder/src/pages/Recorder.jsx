@@ -38,7 +38,10 @@ function Recorder() {
     pauseRecording,
     resumeRecording,
     stopRecording,
-    setPipRect
+    setPipRect,
+    pendingRecording,
+    savePendingRecording,
+    discardPendingRecording
   } = useRecorder();
 
   // ── Click Highlight ripples ──
@@ -350,14 +353,25 @@ function Recorder() {
           <div className="control-section">
             <h3 className="control-label">Controls</h3>
             <div className="action-buttons">
-              {(isIdle || status === "completed") && (
-                <button
-                  className="rec-btn start"
-                  onClick={startRecording}
-                  disabled={isBusy}
-                >
-                  ● Start Recording
-                </button>
+              {pendingRecording ? (
+                <>
+                  <button className="rec-btn start" onClick={savePendingRecording} disabled={isBusy}>
+                    💾 Save to Library
+                  </button>
+                  <button className="rec-btn stop" onClick={discardPendingRecording} disabled={isBusy}>
+                    🗑 Discard
+                  </button>
+                </>
+              ) : (
+                (isIdle || status === "completed") && (
+                  <button
+                    className="rec-btn start"
+                    onClick={startRecording}
+                    disabled={isBusy}
+                  >
+                    ● Start Recording
+                  </button>
+                )
               )}
 
               {isBusy && (
