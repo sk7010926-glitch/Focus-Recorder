@@ -25,7 +25,6 @@ export const DEFAULT_SETTINGS = {
   autoSave:         true,
   notifications:    true,
   hardwareAccel:    true,
-  startOnBoot:      false,
   countdownTimer:   true,
   showCursor:       true,
   clickHighlight:   false,

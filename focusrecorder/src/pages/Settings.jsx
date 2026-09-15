@@ -246,9 +246,6 @@ function Settings() {
             <SettingRow label="Desktop notifications" sub="Get notified when a recording is saved">
               <Toggle value={settings.notifications} onChange={handleToggleNotifications} />
             </SettingRow>
-            <SettingRow label="Launch on startup" sub="Requires desktop application (browser sandbox limitation)">
-              <Toggle value={settings.startOnBoot} onChange={(v) => set("startOnBoot", v)} />
-            </SettingRow>
           </div>
         </section>
 
