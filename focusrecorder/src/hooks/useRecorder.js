@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { saveRecording } from "../services/db";
 import fixWebmDuration from "fix-webm-duration";
 import { loadSettings } from "../services/settings";
@@ -473,6 +474,7 @@ function createTimerWorker(fps = 30) {
 
 export function useRecorder() {
   const _saved = loadSettings();
+  const location = useLocation();
   const [quality, setQuality] = useState(_saved.recordingQuality ?? "1080p");
   const [fps, setFps] = useState(_saved.fps ?? 30);
   const [micOn, setMicOn] = useState(true);
@@ -1177,7 +1179,7 @@ export function useRecorder() {
     handleShareEnded();
   }, [handleShareEnded]);
 
-  // ── Keyboard Shortcuts ────────────────────────────────────────────────────
+  // ── Keyboard Shortcuts (Custom Events from GlobalShortcuts) ───────────────
   // We read functions via refs so this effect never needs to re-run.
   const startRecordingRef = useRef(null);
   const stopRecordingRef  = useRef(null);
@@ -1187,42 +1189,53 @@ export function useRecorder() {
   useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
-    function handleKeyDown(e) {
-      // Only fire when Ctrl+Shift+<key> with no other modifiers
-      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
-
-      const key = e.key.toUpperCase();
-      const st  = statusRef.current;
-
-      if (key === "R") {
-        if (st === "idle" || st === "completed") {
-          e.preventDefault();
-          startRecordingRef.current?.();
-        }
-      } else if (key === "S") {
-        if (st === "recording" || st === "paused") {
-          e.preventDefault();
-          stopRecordingRef.current?.();
-        }
-      } else if (key === "P") {
-        if (st === "recording") {
-          e.preventDefault();
-          pauseRecordingRef.current?.();
-        } else if (st === "paused") {
-          e.preventDefault();
-          resumeRecordingRef.current?.();
-        }
-      } else if (key === "L") {
-        e.preventDefault();
-        // Navigate to library — works with hash-based or history routing
-        const a = document.createElement("a");
-        a.href = "/library";
-        a.click();
+    function handleStart() {
+      const st = statusRef.current;
+      if (st === "idle" || st === "completed") {
+        startRecordingRef.current?.();
       }
     }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    function handleStop() {
+      const st = statusRef.current;
+      if (st === "recording" || st === "paused") {
+        stopRecordingRef.current?.();
+      }
+    }
+    function handleTogglePause() {
+      const st = statusRef.current;
+      if (st === "recording") {
+        pauseRecordingRef.current?.();
+      } else if (st === "paused") {
+        resumeRecordingRef.current?.();
+      }
+    }
+
+    window.addEventListener("app:shortcut:start", handleStart);
+    window.addEventListener("app:shortcut:stop", handleStop);
+    window.addEventListener("app:shortcut:toggle-pause", handleTogglePause);
+    
+    return () => {
+      window.removeEventListener("app:shortcut:start", handleStart);
+      window.removeEventListener("app:shortcut:stop", handleStop);
+      window.removeEventListener("app:shortcut:toggle-pause", handleTogglePause);
+    };
   }, []); // intentionally empty — uses refs
+
+  // ── Handle Auto-Start from Global Navigation ──────────────────────────────
+  const autoStartRef = useRef(location.state?.autoStart);
+  useEffect(() => {
+    if (autoStartRef.current) {
+      autoStartRef.current = false;
+      // Clear the autoStart flag in history state so it doesn't trigger again on reload
+      window.history.replaceState({}, document.title);
+      // Wait for next tick so refs (like previewRef) are attached to DOM
+      setTimeout(() => {
+        if (statusRef.current === "idle" || statusRef.current === "completed") {
+          startRecordingRef.current?.();
+        }
+      }, 50);
+    }
+  }, [location.state]);
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {

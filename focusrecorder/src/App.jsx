@@ -8,6 +8,7 @@ import Editor from "./pages/Editor";
 import Settings from "./pages/Settings";
 
 import { useTheme } from "./hooks/useTheme";
+import GlobalShortcuts from "./components/GlobalShortcuts";
 
 function App() {
   // Initialize theme on app load and keep it synced
@@ -15,6 +16,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <GlobalShortcuts />
       {/* Navbar is visible on every page */}
       <Navbar />
 
