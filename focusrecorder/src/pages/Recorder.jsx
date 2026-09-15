@@ -41,7 +41,8 @@ function Recorder() {
     setPipRect,
     pendingRecording,
     savePendingRecording,
-    discardPendingRecording
+    discardPendingRecording,
+    addCanvasRipple
   } = useRecorder();
 
   // ── Click Highlight ripples ──
@@ -54,9 +55,12 @@ function Recorder() {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    // DOM overlay ripple (visible in the preview)
     setRipples(prev => [...prev, { id, x, y }]);
     setTimeout(() => setRipples(prev => prev.filter(r => r.id !== id)), 700);
-  }, [clickHighlightOn]);
+    // Canvas ripple (baked into the actual recording)
+    addCanvasRipple(x / rect.width, y / rect.height);
+  }, [clickHighlightOn, addCanvasRipple]);
 
   // ── PIP Drag & Resize Logic ──
   const [pipStyle, setPipStyle] = useState({ bottom: 12, right: 12, width: 240, height: 135 });

@@ -527,6 +527,8 @@ export function useRecorder() {
   const isStoppingRef = useRef(false);
   const renderVideoRef = useRef(null);
   const canvasVideoTrackRef = useRef(null);
+  // Shared ripple list: written by Recorder.jsx handleClickHighlight, read by canvas render loop
+  const canvasRipplesRef = useRef([]);
 
   const fpsRef = useRef(fps);
   const camOnRef = useRef(camOn);
@@ -897,62 +899,86 @@ export function useRecorder() {
         previewRef.current.play().catch(e => console.warn("[FocusRecorder] Preview play():", e.message));
       }
 
-      // ── 4. Direct Screen Stream vs Canvas Compositing ─────────────────────
+      // ── 4. Canvas Compositing Pipeline (always active — guarantees fixed output resolution) ──
+      //
+      // We ALWAYS route through an off-screen canvas so the final MediaRecorder
+      // output is sized exactly to the QUALITY_MAP target (720p / 1080p / 4K),
+      // regardless of the physical monitor resolution or what getDisplayMedia() delivered.
+      //
+      // Source is drawn with an aspect-ratio-preserving "contain" strategy so content
+      // is never stretched; letterbox/pillarbox bars (black) fill any excess space.
       let combinedStream;
-
-      const requiresCanvas = camOn;
-
-      if (!requiresCanvas) {
-        console.log("[FocusRecorder] Using direct native stream (Webcam PIP OFF)");
+      {
+        // Inspect what the browser actually delivered (may differ from ideal constraints)
         const displayVideoTrack = displayStream.getVideoTracks()[0];
-        combinedStream = new MediaStream([displayVideoTrack, ...rawAudioTracks]);
-        mixedStreamRef.current = combinedStream;
-      } else {
-        console.log(`[FocusRecorder] Setting up canvas compositing (Webcam PIP: ${camOn})...`);
+        const trackSettings = displayVideoTrack.getSettings();
+        const srcW = trackSettings.width  || 1920;
+        const srcH = trackSettings.height || 1080;
 
+        console.log(
+          `[FocusRecorder] Source capture: ${srcW}×${srcH} → ` +
+          `Output canvas: ${width}×${height} (${quality})` +
+          (srcW < width || srcH < height ? " [upscale — no new pixel detail added]" : "")
+        );
+
+        // Off-screen <video> fed by the display stream.
+        // Must stay in DOM (1×1 px) so Chrome's compositor doesn't throttle it.
         const renderVideo = document.createElement("video");
         renderVideo.srcObject = displayStream;
         renderVideo.muted = true;
         renderVideo.playsInline = true;
-        renderVideo.style.position = "fixed";
-        renderVideo.style.top = "0";
-        renderVideo.style.left = "0";
-        renderVideo.style.width = "1px";
-        renderVideo.style.height = "1px";
-        renderVideo.style.zIndex = "999999";
-        renderVideo.style.opacity = "1";
-        renderVideo.style.pointerEvents = "none";
+        renderVideo.style.cssText =
+          "position:fixed;top:0;left:0;width:1px;height:1px;" +
+          "z-index:999999;opacity:1;pointer-events:none;";
         document.body.appendChild(renderVideo);
-
         renderVideoRef.current = renderVideo;
-        await renderVideo.play().catch(e => console.warn("[FocusRecorder] Render video play():", e.message));
+        await renderVideo.play().catch(e =>
+          console.warn("[FocusRecorder] Render video play():", e.message)
+        );
 
-        const canvasW = renderVideo.videoWidth || width;
-        const canvasH = renderVideo.videoHeight || height;
-
+        // Canvas is ALWAYS sized to the TARGET output resolution from QUALITY_MAP
         const canvas = document.createElement("canvas");
-        canvas.width = canvasW;
-        canvas.height = canvasH;
+        canvas.width  = width;    // e.g. 1280 for 720p, 1920 for 1080p, 3840 for 4K
+        canvas.height = height;
         canvasRef.current = canvas;
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { alpha: false });
 
+        // Clear any stale ripples from a previous recording
+        canvasRipplesRef.current = [];
+
+        // Sub-pixel toggle — keeps captureStream() producing frames even when screen is static
         let togglePixel = false;
+
         const renderCanvas = () => {
           const rVideo = renderVideoRef.current;
-          if (rVideo && (rVideo.readyState >= 1 || rVideo.videoWidth > 0)) {
-            if (rVideo.videoWidth > 0 && rVideo.videoHeight > 0 && (canvas.width !== rVideo.videoWidth || canvas.height !== rVideo.videoHeight)) {
-              canvas.width = rVideo.videoWidth;
-              canvas.height = rVideo.videoHeight;
-            }
-            try {
-              ctx.drawImage(rVideo, 0, 0, canvas.width, canvas.height);
-            } catch (e) { console.warn(e); }
+          const outW = canvas.width;    // fixed = QUALITY_MAP width
+          const outH = canvas.height;   // fixed = QUALITY_MAP height
+
+          // ── Black background (fills letterbox / pillarbox areas) ──
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, 0, outW, outH);
+
+          // ── Screen source with aspect-ratio-preserving contain scaling ──
+          if (rVideo && rVideo.videoWidth > 0 && rVideo.videoHeight > 0) {
+            const vW = rVideo.videoWidth;
+            const vH = rVideo.videoHeight;
+            const scale  = Math.min(outW / vW, outH / vH);
+            const drawW  = vW * scale;
+            const drawH  = vH * scale;
+            const drawX  = (outW - drawW) / 2;
+            const drawY  = (outH - drawH) / 2;
+            try { ctx.drawImage(rVideo, drawX, drawY, drawW, drawH); } catch (e) { /**/ }
+          } else if (rVideo && rVideo.readyState >= 1) {
+            // Dimensions not yet known — fill canvas as best-effort
+            try { ctx.drawImage(rVideo, 0, 0, outW, outH); } catch (e) { /**/ }
           }
 
+          // Sub-pixel flicker to prevent captureStream() from stalling on static frames
           togglePixel = !togglePixel;
-          ctx.fillStyle = togglePixel ? "rgba(0,0,0,0.01)" : "rgba(255,255,255,0.01)";
+          ctx.fillStyle = togglePixel ? "rgba(0,0,0,0.004)" : "rgba(255,255,255,0.004)";
           ctx.fillRect(0, 0, 1, 1);
 
+          // ── Webcam PIP (only when enabled) ──
           const camVid = camVideoRef.current;
           if (camOnRef.current && camVid && camVid.readyState >= 2) {
             let rect = pipRectRef.current;
@@ -960,32 +986,26 @@ export function useRecorder() {
               const pipW_px = 240;
               const pipH_px = 135;
               rect = {
-                x: Math.max(0, (canvas.width - pipW_px - 20) / canvas.width),
-                y: Math.max(0, (canvas.height - pipH_px - 20) / canvas.height),
-                width: pipW_px / canvas.width,
-                height: pipH_px / canvas.height
+                x:      Math.max(0, (outW - pipW_px - 20) / outW),
+                y:      Math.max(0, (outH - pipH_px - 20) / outH),
+                width:  pipW_px / outW,
+                height: pipH_px / outH,
               };
             }
+            const pipX = rect.x      * outW;
+            const pipY = rect.y      * outH;
+            const pipW = rect.width  * outW;
+            const pipH = rect.height * outH;
 
-            const pipX = rect.x * canvas.width;
-            const pipY = rect.y * canvas.height;
-            const pipW = rect.width * canvas.width;
-            const pipH = rect.height * canvas.height;
-
-            const cW = camVid.videoWidth || 1;
+            const cW = camVid.videoWidth  || 1;
             const cH = camVid.videoHeight || 1;
             const cA = cW / cH;
             const pA = pipW / pipH;
-
             let sx = 0, sy = 0, sw = cW, sh = cH;
-            if (cA > pA) {
-              sw = cH * pA;
-              sx = (cW - sw) / 2;
-            } else {
-              sh = cW / pA;
-              sy = (cH - sh) / 2;
-            }
+            if (cA > pA) { sw = cH * pA; sx = (cW - sw) / 2; }
+            else         { sh = cW / pA; sy = (cH - sh) / 2; }
 
+            // Draw webcam frame
             ctx.save();
             ctx.beginPath();
             if (ctx.roundRect) ctx.roundRect(pipX, pipY, pipW, pipH, 16);
@@ -994,6 +1014,7 @@ export function useRecorder() {
             ctx.drawImage(camVid, sx, sy, sw, sh, pipX, pipY, pipW, pipH);
             ctx.restore();
 
+            // Purple border
             ctx.save();
             ctx.beginPath();
             if (ctx.roundRect) ctx.roundRect(pipX, pipY, pipW, pipH, 16);
@@ -1004,8 +1025,33 @@ export function useRecorder() {
             ctx.restore();
           }
 
-          if (canvasVideoTrackRef.current && typeof canvasVideoTrackRef.current.requestFrame === "function") {
-            try { canvasVideoTrackRef.current.requestFrame(); } catch (e) { console.warn(e); }
+          // ── Click-highlight ripples drawn directly onto recording canvas ──
+          if (clickHighlightRef.current && canvasRipplesRef.current.length > 0) {
+            const now = performance.now();
+            // Prune expired ripples (> 700ms old)
+            canvasRipplesRef.current = canvasRipplesRef.current.filter(r => now - r.t < 700);
+            for (const r of canvasRipplesRef.current) {
+              const progress = (now - r.t) / 700;    // 0 (fresh) → 1 (expired)
+              const cx     = r.xPct * outW;           // fractional coords → canvas px
+              const cy     = r.yPct * outH;
+              const radius = progress * outH * 0.04;  // grows to ~4% of canvas height
+              const alpha  = 1 - progress;
+              ctx.save();
+              ctx.beginPath();
+              ctx.arc(cx, cy, Math.max(0, radius), 0, Math.PI * 2);
+              ctx.fillStyle   = `rgba(239,68,68,${(alpha * 0.4).toFixed(3)})`;
+              ctx.strokeStyle = `rgba(239,68,68,${(alpha * 0.9).toFixed(3)})`;
+              ctx.lineWidth   = Math.max(1, outH * 0.003);
+              ctx.fill();
+              ctx.stroke();
+              ctx.restore();
+            }
+          }
+
+          // Signal captureStream() that a new frame is ready (required for requestFrame API)
+          if (canvasVideoTrackRef.current &&
+              typeof canvasVideoTrackRef.current.requestFrame === "function") {
+            try { canvasVideoTrackRef.current.requestFrame(); } catch (e) { /**/ }
           }
         };
 
@@ -1018,10 +1064,10 @@ export function useRecorder() {
         };
         timerWorker.postMessage("start");
 
-        const canvasStream = canvas.captureStream(targetFps);
+        const canvasStream     = canvas.captureStream(targetFps);
         const canvasVideoTrack = canvasStream.getVideoTracks()[0];
         canvasVideoTrackRef.current = canvasVideoTrack;
-        combinedStream = new MediaStream([canvasVideoTrack, ...rawAudioTracks]);
+        combinedStream      = new MediaStream([canvasVideoTrack, ...rawAudioTracks]);
         mixedStreamRef.current = combinedStream;
       }
 
@@ -1339,5 +1385,11 @@ export function useRecorder() {
     pendingRecording,
     savePendingRecording,
     discardPendingRecording,
+    /** Push a click ripple into the canvas render loop.
+     *  xPct / yPct = click position as a fraction (0–1) of the preview element.
+     *  These map directly to the output canvas coordinate space. */
+    addCanvasRipple: (xPct, yPct) => {
+      canvasRipplesRef.current.push({ xPct, yPct, t: performance.now() });
+    },
   };
 }
