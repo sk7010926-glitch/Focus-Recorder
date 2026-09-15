@@ -389,3 +389,71 @@
   .recorder-page { padding: 1.5rem 1.25rem; }
   .timer { font-size: 2.5rem; }
 }
+
+/* ── Countdown overlay ── */
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  border-radius: inherit;
+  z-index: 20;
+  pointer-events: none;
+  gap: 0.5rem;
+}
+
+.countdown-number {
+  font-size: clamp(5rem, 18vw, 9rem);
+  font-weight: 900;
+  color: #fff;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  animation: countdownPop 0.9s ease-out forwards;
+}
+
+.countdown-label {
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.7);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+@keyframes countdownPop {
+  0%   { transform: scale(1.6); opacity: 0; }
+  15%  { transform: scale(1);   opacity: 1; }
+  75%  { transform: scale(1);   opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0; }
+}
+
+/* ── Click Highlight overlay ── */
+.click-highlight-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  cursor: crosshair;
+  border-radius: inherit;
+  /* pass mouse events through to preview elements below for drag etc */
+  pointer-events: auto;
+}
+
+.click-ripple {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.6);
+  border: 2px solid rgba(239, 68, 68, 0.9);
+  transform: translate(-50%, -50%) scale(0);
+  animation: rippleExpand 0.7s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes rippleExpand {
+  0%   { transform: translate(-50%, -50%) scale(0);   opacity: 1; }
+  60%  { transform: translate(-50%, -50%) scale(2.2); opacity: 0.6; }
+  100% { transform: translate(-50%, -50%) scale(3);   opacity: 0; }
+}

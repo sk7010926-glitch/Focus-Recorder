@@ -367,11 +367,11 @@ function Settings() {
             <SettingRow label="Stop recording">
               <kbd>{settings.shortcutStop}</kbd>
             </SettingRow>
-            <SettingRow label="Pause recording">
-              <kbd>Ctrl + Shift + P</kbd>
+            <SettingRow label="Pause / Resume recording">
+              <kbd>{settings.shortcutPause}</kbd>
             </SettingRow>
             <SettingRow label="Open Library">
-              <kbd>Ctrl + Shift + L</kbd>
+              <kbd>{settings.shortcutLibrary}</kbd>
             </SettingRow>
           </div>
         </section>

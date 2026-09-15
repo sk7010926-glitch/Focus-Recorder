@@ -32,9 +32,11 @@ export const DEFAULT_SETTINGS = {
   // Storage
   savePath:         "~/Documents/FocusRecorder",
 
-  // Shortcuts (display-only)
+  // Keyboard shortcuts (matched by real keydown listeners in useRecorder)
   shortcutStart:    "Ctrl + Shift + R",
   shortcutStop:     "Ctrl + Shift + S",
+  shortcutPause:    "Ctrl + Shift + P",
+  shortcutLibrary:  "Ctrl + Shift + L",
 };
 
 /**

@@ -480,6 +480,15 @@ export function useRecorder() {
   const [camOn, setCamOn] = useState(false);
   const [captureMode, setCaptureMode] = useState("window"); // "window" | "monitor" | "browser"
 
+  // Settings-driven feature flags — re-read on each recording start
+  const [clickHighlightOn, setClickHighlightOn] = useState(_saved.clickHighlight ?? false);
+  const [showCursorOn, setShowCursorOn] = useState(_saved.showCursor ?? true);
+  const clickHighlightRef = useRef(_saved.clickHighlight ?? false);
+  const showCursorRef = useRef(_saved.showCursor ?? true);
+
+  // Countdown state: null = not counting, 3/2/1 = active countdown
+  const [countdown, setCountdown] = useState(null);
+
   const micDeviceIdRef = useRef(_saved.microphoneId ?? "");
   const camDeviceIdRef = useRef(_saved.webcamId ?? "");
 
@@ -722,6 +731,20 @@ export function useRecorder() {
     recordingStartTimeRef.current = null;
     recordingStopTimeRef.current = null;
 
+    // Re-read settings fresh so any changes made in Settings since last recording apply
+    const currentSettings = loadSettings();
+    micDeviceIdRef.current = currentSettings.microphoneId ?? "";
+    camDeviceIdRef.current = currentSettings.webcamId ?? "";
+    const useCountdown = currentSettings.countdownTimer ?? true;
+    const useCursor = currentSettings.showCursor ?? true;
+    const useClickHighlight = currentSettings.clickHighlight ?? false;
+
+    // Sync feature-flag state so Recorder UI reflects current settings
+    clickHighlightRef.current = useClickHighlight;
+    showCursorRef.current = useCursor;
+    setClickHighlightOn(useClickHighlight);
+    setShowCursorOn(useCursor);
+
     // Preload FFmpeg in background while recording so it is warm and instant on stop
     preloadFFmpeg();
 
@@ -735,7 +758,7 @@ export function useRecorder() {
       }
 
       // ── 1. Get screen/window capture ─────────────────────────────────────
-      console.log(`[FocusRecorder] Requesting screen capture (mode: ${captureMode}, targetFps: ${targetFps})...`);
+      console.log(`[FocusRecorder] Requesting screen capture (mode: ${captureMode}, targetFps: ${targetFps}, cursor: ${useCursor ? "always" : "never"})...`);
       let displayStream;
       try {
         const displayOptions = {
@@ -743,7 +766,9 @@ export function useRecorder() {
             displaySurface: captureMode,
             width: { ideal: width },
             height: { ideal: height },
-            frameRate: { ideal: targetFps, max: targetFps }
+            frameRate: { ideal: targetFps, max: targetFps },
+            // cursor: "always"|"never" — Chrome honours this; Firefox treats it as a hint only
+            cursor: useCursor ? "always" : "never",
           },
           audio: audioOn ? {
             autoGainControl: false,
@@ -762,6 +787,7 @@ export function useRecorder() {
           screenErr.name === "PermissionDeniedError"
         ) {
           setStatus("idle");
+          setCountdown(null);
           return;
         }
         if (audioOn && screenErr.name !== "NotAllowedError") {
@@ -771,7 +797,8 @@ export function useRecorder() {
                 displaySurface: captureMode,
                 width: { ideal: width },
                 height: { ideal: height },
-                frameRate: { ideal: targetFps, max: targetFps }
+                frameRate: { ideal: targetFps, max: targetFps },
+                cursor: useCursor ? "always" : "never",
               },
               audio: false
             });
@@ -1081,6 +1108,25 @@ export function useRecorder() {
       const displayTrack = displayStream.getVideoTracks()[0];
       displayTrack.addEventListener("ended", handleShareEnded);
 
+      // ── Countdown before recording starts ────────────────────────────────
+      if (useCountdown) {
+        setStatus("countdown");
+        await new Promise((resolve) => {
+          let count = 3;
+          setCountdown(count);
+          const iv = setInterval(() => {
+            count -= 1;
+            if (count <= 0) {
+              clearInterval(iv);
+              setCountdown(null);
+              resolve();
+            } else {
+              setCountdown(count);
+            }
+          }, 1000);
+        });
+      }
+
       // FIX: 100ms timeslices - prevents up to 1s of data loss at cluster boundaries
       recordingStartTimeRef.current = Date.now();
       recorder.start(100);
@@ -1106,7 +1152,7 @@ export function useRecorder() {
       }
       setStatus("idle");
     }
-  }, [quality, fps, micOn, audioOn, camOn, captureMode, startTimer, stopTimer, teardownAllStreams, handleShareEnded]);
+  }, [quality, fps, micOn, audioOn, camOn, captureMode, startTimer, stopTimer, teardownAllStreams, handleShareEnded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── pauseRecording ────────────────────────────────────────────────────────
   const pauseRecording = useCallback(() => {
@@ -1131,6 +1177,53 @@ export function useRecorder() {
     handleShareEnded();
   }, [handleShareEnded]);
 
+  // ── Keyboard Shortcuts ────────────────────────────────────────────────────
+  // We read functions via refs so this effect never needs to re-run.
+  const startRecordingRef = useRef(null);
+  const stopRecordingRef  = useRef(null);
+  const pauseRecordingRef = useRef(null);
+  const resumeRecordingRef = useRef(null);
+  const statusRef         = useRef(status);
+  useEffect(() => { statusRef.current = status; }, [status]);
+
+  useEffect(() => {
+    function handleKeyDown(e) {
+      // Only fire when Ctrl+Shift+<key> with no other modifiers
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
+
+      const key = e.key.toUpperCase();
+      const st  = statusRef.current;
+
+      if (key === "R") {
+        if (st === "idle" || st === "completed") {
+          e.preventDefault();
+          startRecordingRef.current?.();
+        }
+      } else if (key === "S") {
+        if (st === "recording" || st === "paused") {
+          e.preventDefault();
+          stopRecordingRef.current?.();
+        }
+      } else if (key === "P") {
+        if (st === "recording") {
+          e.preventDefault();
+          pauseRecordingRef.current?.();
+        } else if (st === "paused") {
+          e.preventDefault();
+          resumeRecordingRef.current?.();
+        }
+      } else if (key === "L") {
+        e.preventDefault();
+        // Navigate to library — works with hash-based or history routing
+        const a = document.createElement("a");
+        a.href = "/library";
+        a.click();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []); // intentionally empty — uses refs
+
   // ── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
     const camVid = camVideoRef.current;
@@ -1150,6 +1243,12 @@ export function useRecorder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keep shortcut refs in sync with the latest callbacks
+  useEffect(() => { startRecordingRef.current  = startRecording;  }, [startRecording]);
+  useEffect(() => { stopRecordingRef.current   = stopRecording;   }, [stopRecording]);
+  useEffect(() => { pauseRecordingRef.current  = pauseRecording;  }, [pauseRecording]);
+  useEffect(() => { resumeRecordingRef.current = resumeRecording; }, [resumeRecording]);
+
   return {
     status,
     elapsed,
@@ -1165,6 +1264,9 @@ export function useRecorder() {
     micOn, setMicOn,
     audioOn, setAudioOn,
     camOn, setCamOn,
+    countdown,
+    clickHighlightOn,
+    showCursorOn,
     startRecording,
     pauseRecording,
     resumeRecording,

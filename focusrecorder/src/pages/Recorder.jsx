@@ -4,12 +4,13 @@ import "./Recorder.css";
 
 /** Maps internal status → human-readable label + CSS class */
 const STATUS_META = {
-  idle: { label: "Ready to Record", cls: "idle" },
-  requesting: { label: "Requesting permission…", cls: "requesting" },
-  recording: { label: "Recording in progress…", cls: "recording" },
-  paused: { label: "Recording paused", cls: "paused" },
-  saving: { label: "Converting to MP4 & Saving…", cls: "saving" },
-  completed: { label: "Completed", cls: "completed" },
+  idle:       { label: "Ready to Record",          cls: "idle" },
+  requesting: { label: "Requesting permission…",   cls: "requesting" },
+  countdown:  { label: "Starting…",                cls: "requesting" },
+  recording:  { label: "Recording in progress…",   cls: "recording" },
+  paused:     { label: "Recording paused",          cls: "paused" },
+  saving:     { label: "Converting to MP4 & Saving…", cls: "saving" },
+  completed:  { label: "Completed",                cls: "completed" },
 };
 
 const CAPTURE_MODES = [
@@ -31,12 +32,28 @@ function Recorder() {
     micOn, setMicOn,
     audioOn, setAudioOn,
     camOn, setCamOn,
+    countdown,
+    clickHighlightOn,
     startRecording,
     pauseRecording,
     resumeRecording,
     stopRecording,
     setPipRect
   } = useRecorder();
+
+  // ── Click Highlight ripples ──
+  const [ripples, setRipples] = useState([]);
+  const rippleIdRef = useRef(0);
+
+  const handleClickHighlight = useCallback((e) => {
+    if (!clickHighlightOn) return;
+    const id = ++rippleIdRef.current;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setRipples(prev => [...prev, { id, x, y }]);
+    setTimeout(() => setRipples(prev => prev.filter(r => r.id !== id)), 700);
+  }, [clickHighlightOn]);
 
   // ── PIP Drag & Resize Logic ──
   const [pipStyle, setPipStyle] = useState({ bottom: 12, right: 12, width: 240, height: 135 });
@@ -112,7 +129,8 @@ function Recorder() {
   const isIdle = status === "idle";
   const isRecording = status === "recording";
   const isPaused = status === "paused";
-  const isBusy = status === "requesting" || status === "saving";
+  const isCountdown = status === "countdown";
+  const isBusy = status === "requesting" || status === "saving" || isCountdown;
 
   return (
     <div className="recorder-page">
@@ -203,6 +221,34 @@ function Recorder() {
                 cursor: camOn ? "grab" : "default"
               }}
             />
+
+            {/* Click Highlight overlay — captures clicks during recording/countdown,
+                renders animated ripple circles. Ripples are visible in the preview
+                and are composited into the canvas when webcam PIP is active. */}
+            {(isRecording || isPaused) && clickHighlightOn && (
+              <div
+                className="click-highlight-overlay"
+                onMouseDown={handleClickHighlight}
+              >
+                {ripples.map(r => (
+                  <span
+                    key={r.id}
+                    className="click-ripple"
+                    style={{ left: r.x, top: r.y }}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Countdown overlay */}
+            {isCountdown && countdown !== null && (
+              <div className="countdown-overlay">
+                <div className="countdown-number" key={countdown}>
+                  {countdown}
+                </div>
+                <div className="countdown-label">Recording starts in…</div>
+              </div>
+            )}
 
             {/* REC / PAUSED badge */}
             {(isRecording || isPaused) && (
