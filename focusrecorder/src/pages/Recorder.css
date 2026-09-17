@@ -193,13 +193,18 @@
 
 /* Timer */
 .timer {
-  font-size: 3rem;
+  font-size: 2.8rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  color: #374151;
+  color: rgba(241, 245, 249, 0.3); /* visible but dimmed when idle */
   text-align: center;
   letter-spacing: -0.04em;
   transition: color 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  min-height: 4rem;
 }
 
 .timer.active {
@@ -208,6 +213,25 @@
 
 .timer.paused-timer {
   color: #f59e0b;
+}
+
+/* 🔴 REC / ⏸ PAUSED label inside timer */
+.rec-label {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #ef4444;
+  animation: rec-blink 1s ease-in-out infinite;
+}
+
+.rec-label.paused-label {
+  color: #f59e0b;
+  animation: none;
+}
+
+@keyframes rec-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 /* ── Controls panel ── */

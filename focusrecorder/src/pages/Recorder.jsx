@@ -132,6 +132,18 @@ function Recorder() {
     return () => observer.disconnect();
   }, [updatePipRect, camVideoRef]);
 
+  // ── Live timer in browser tab title (visible from taskbar while recording) ──
+  useEffect(() => {
+    if (status === "recording") {
+      document.title = `🔴 REC ${formattedTime} | FocusRecorder`;
+    } else if (status === "paused") {
+      document.title = `⏸ ${formattedTime} | FocusRecorder`;
+    } else {
+      document.title = "FocusRecorder";
+    }
+    return () => { document.title = "FocusRecorder"; };
+  }, [status, formattedTime]);
+
   const meta = STATUS_META[status] ?? STATUS_META.idle;
   const isIdle = status === "idle";
   const isRecording = status === "recording";
@@ -268,6 +280,12 @@ function Recorder() {
 
           {/* Timer */}
           <div className={`timer ${isRecording ? "active" : isPaused ? "paused-timer" : ""}`}>
+            {isRecording && (
+              <span className="rec-label">🔴 REC&nbsp;</span>
+            )}
+            {isPaused && (
+              <span className="rec-label paused-label">⏸ PAUSED&nbsp;</span>
+            )}
             {formattedTime}
           </div>
         </div>

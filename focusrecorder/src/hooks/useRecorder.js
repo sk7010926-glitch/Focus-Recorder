@@ -1223,6 +1223,7 @@ export function useRecorder() {
   // ── pauseRecording ────────────────────────────────────────────────────────
   const pauseRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === "recording") {
+      recordingActiveRef.current = false; // Stop canvas loop to freeze video timestamps
       mediaRecorderRef.current.pause();
       stopTimer();
       setStatus("paused");
@@ -1232,6 +1233,7 @@ export function useRecorder() {
   // ── resumeRecording ───────────────────────────────────────────────────────
   const resumeRecording = useCallback(() => {
     if (mediaRecorderRef.current?.state === "paused") {
+      recordingActiveRef.current = true; // Restart canvas loop before resuming
       mediaRecorderRef.current.resume();
       startTimer();
       setStatus("recording");
@@ -1393,3 +1395,4 @@ export function useRecorder() {
     },
   };
 }
+
