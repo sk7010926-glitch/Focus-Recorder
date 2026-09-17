@@ -912,7 +912,7 @@ export function useRecorder() {
         // Inspect what the browser actually delivered (may differ from ideal constraints)
         const displayVideoTrack = displayStream.getVideoTracks()[0];
         const trackSettings = displayVideoTrack.getSettings();
-        const srcW = trackSettings.width  || 1920;
+        const srcW = trackSettings.width || 1920;
         const srcH = trackSettings.height || 1080;
 
         console.log(
@@ -938,7 +938,7 @@ export function useRecorder() {
 
         // Canvas is ALWAYS sized to the TARGET output resolution from QUALITY_MAP
         const canvas = document.createElement("canvas");
-        canvas.width  = width;    // e.g. 1280 for 720p, 1920 for 1080p, 3840 for 4K
+        canvas.width = width;    // e.g. 1280 for 720p, 1920 for 1080p, 3840 for 4K
         canvas.height = height;
         canvasRef.current = canvas;
         const ctx = canvas.getContext("2d", { alpha: false });
@@ -962,11 +962,11 @@ export function useRecorder() {
           if (rVideo && rVideo.videoWidth > 0 && rVideo.videoHeight > 0) {
             const vW = rVideo.videoWidth;
             const vH = rVideo.videoHeight;
-            const scale  = Math.min(outW / vW, outH / vH);
-            const drawW  = vW * scale;
-            const drawH  = vH * scale;
-            const drawX  = (outW - drawW) / 2;
-            const drawY  = (outH - drawH) / 2;
+            const scale = Math.min(outW / vW, outH / vH);
+            const drawW = vW * scale;
+            const drawH = vH * scale;
+            const drawX = (outW - drawW) / 2;
+            const drawY = (outH - drawH) / 2;
             try { ctx.drawImage(rVideo, drawX, drawY, drawW, drawH); } catch (e) { /**/ }
           } else if (rVideo && rVideo.readyState >= 1) {
             // Dimensions not yet known — fill canvas as best-effort
@@ -986,24 +986,24 @@ export function useRecorder() {
               const pipW_px = 240;
               const pipH_px = 135;
               rect = {
-                x:      Math.max(0, (outW - pipW_px - 20) / outW),
-                y:      Math.max(0, (outH - pipH_px - 20) / outH),
-                width:  pipW_px / outW,
+                x: Math.max(0, (outW - pipW_px - 20) / outW),
+                y: Math.max(0, (outH - pipH_px - 20) / outH),
+                width: pipW_px / outW,
                 height: pipH_px / outH,
               };
             }
-            const pipX = rect.x      * outW;
-            const pipY = rect.y      * outH;
-            const pipW = rect.width  * outW;
+            const pipX = rect.x * outW;
+            const pipY = rect.y * outH;
+            const pipW = rect.width * outW;
             const pipH = rect.height * outH;
 
-            const cW = camVid.videoWidth  || 1;
+            const cW = camVid.videoWidth || 1;
             const cH = camVid.videoHeight || 1;
             const cA = cW / cH;
             const pA = pipW / pipH;
             let sx = 0, sy = 0, sw = cW, sh = cH;
             if (cA > pA) { sw = cH * pA; sx = (cW - sw) / 2; }
-            else         { sh = cW / pA; sy = (cH - sh) / 2; }
+            else { sh = cW / pA; sy = (cH - sh) / 2; }
 
             // Draw webcam frame
             ctx.save();
@@ -1032,16 +1032,16 @@ export function useRecorder() {
             canvasRipplesRef.current = canvasRipplesRef.current.filter(r => now - r.t < 700);
             for (const r of canvasRipplesRef.current) {
               const progress = (now - r.t) / 700;    // 0 (fresh) → 1 (expired)
-              const cx     = r.xPct * outW;           // fractional coords → canvas px
-              const cy     = r.yPct * outH;
+              const cx = r.xPct * outW;           // fractional coords → canvas px
+              const cy = r.yPct * outH;
               const radius = progress * outH * 0.04;  // grows to ~4% of canvas height
-              const alpha  = 1 - progress;
+              const alpha = 1 - progress;
               ctx.save();
               ctx.beginPath();
               ctx.arc(cx, cy, Math.max(0, radius), 0, Math.PI * 2);
-              ctx.fillStyle   = `rgba(239,68,68,${(alpha * 0.4).toFixed(3)})`;
+              ctx.fillStyle = `rgba(239,68,68,${(alpha * 0.4).toFixed(3)})`;
               ctx.strokeStyle = `rgba(239,68,68,${(alpha * 0.9).toFixed(3)})`;
-              ctx.lineWidth   = Math.max(1, outH * 0.003);
+              ctx.lineWidth = Math.max(1, outH * 0.003);
               ctx.fill();
               ctx.stroke();
               ctx.restore();
@@ -1050,7 +1050,7 @@ export function useRecorder() {
 
           // Signal captureStream() that a new frame is ready (required for requestFrame API)
           if (canvasVideoTrackRef.current &&
-              typeof canvasVideoTrackRef.current.requestFrame === "function") {
+            typeof canvasVideoTrackRef.current.requestFrame === "function") {
             try { canvasVideoTrackRef.current.requestFrame(); } catch (e) { /**/ }
           }
         };
@@ -1064,10 +1064,10 @@ export function useRecorder() {
         };
         timerWorker.postMessage("start");
 
-        const canvasStream     = canvas.captureStream(targetFps);
+        const canvasStream = canvas.captureStream(targetFps);
         const canvasVideoTrack = canvasStream.getVideoTracks()[0];
         canvasVideoTrackRef.current = canvasVideoTrack;
-        combinedStream      = new MediaStream([canvasVideoTrack, ...rawAudioTracks]);
+        combinedStream = new MediaStream([canvasVideoTrack, ...rawAudioTracks]);
         mixedStreamRef.current = combinedStream;
       }
 
@@ -1250,7 +1250,7 @@ export function useRecorder() {
     try {
       const currentSettings = loadSettings();
       await saveRecording(pendingRecording.recordData);
-      
+
       if (currentSettings.notifications && typeof Notification !== "undefined" && Notification.permission === "granted") {
         try { new Notification("FocusRecorder", { body: "Recording saved to Library!" }); } catch (e) { /* ignore */ }
       }
@@ -1261,7 +1261,7 @@ export function useRecorder() {
       a.download = `focusrecorder-${Date.now()}.mp4`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      
+
       setPendingRecording(null);
       setStatus("completed");
     } catch (saveErr) {
@@ -1279,10 +1279,10 @@ export function useRecorder() {
   // ── Keyboard Shortcuts (Custom Events from GlobalShortcuts) ───────────────
   // We read functions via refs so this effect never needs to re-run.
   const startRecordingRef = useRef(null);
-  const stopRecordingRef  = useRef(null);
+  const stopRecordingRef = useRef(null);
   const pauseRecordingRef = useRef(null);
   const resumeRecordingRef = useRef(null);
-  const statusRef         = useRef(status);
+  const statusRef = useRef(status);
   useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
@@ -1310,7 +1310,7 @@ export function useRecorder() {
     window.addEventListener("app:shortcut:start", handleStart);
     window.addEventListener("app:shortcut:stop", handleStop);
     window.addEventListener("app:shortcut:toggle-pause", handleTogglePause);
-    
+
     return () => {
       window.removeEventListener("app:shortcut:start", handleStart);
       window.removeEventListener("app:shortcut:stop", handleStop);
@@ -1354,9 +1354,9 @@ export function useRecorder() {
   }, []);
 
   // Keep shortcut refs in sync with the latest callbacks
-  useEffect(() => { startRecordingRef.current  = startRecording;  }, [startRecording]);
-  useEffect(() => { stopRecordingRef.current   = stopRecording;   }, [stopRecording]);
-  useEffect(() => { pauseRecordingRef.current  = pauseRecording;  }, [pauseRecording]);
+  useEffect(() => { startRecordingRef.current = startRecording; }, [startRecording]);
+  useEffect(() => { stopRecordingRef.current = stopRecording; }, [stopRecording]);
+  useEffect(() => { pauseRecordingRef.current = pauseRecording; }, [pauseRecording]);
   useEffect(() => { resumeRecordingRef.current = resumeRecording; }, [resumeRecording]);
 
   return {
