@@ -4,13 +4,13 @@ import "./Recorder.css";
 
 /** Maps internal status → human-readable label + CSS class */
 const STATUS_META = {
-  idle:       { label: "Ready to Record",          cls: "idle" },
-  requesting: { label: "Requesting permission…",   cls: "requesting" },
-  countdown:  { label: "Starting…",                cls: "requesting" },
-  recording:  { label: "Recording in progress…",   cls: "recording" },
-  paused:     { label: "Recording paused",          cls: "paused" },
-  saving:     { label: "Converting to MP4 & Saving…", cls: "saving" },
-  completed:  { label: "Completed",                cls: "completed" },
+  idle: { label: "Ready to Record", cls: "idle" },
+  requesting: { label: "Requesting permission…", cls: "requesting" },
+  countdown: { label: "Starting…", cls: "requesting" },
+  recording: { label: "Recording in progress…", cls: "recording" },
+  paused: { label: "Recording paused", cls: "paused" },
+  saving: { label: "Converting to MP4 & Saving…", cls: "saving" },
+  completed: { label: "Completed", cls: "completed" },
 };
 
 const CAPTURE_MODES = [
