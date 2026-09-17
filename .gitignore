@@ -1,6 +1,31 @@
+# Dependencies
 node_modules/
+focusrecorder/node_modules/
+
+# Build outputs
 dist/
+focusrecorder/dist/
+
+# Electron build artifacts
+out/
+release/
+*.dmg
+*.exe
+*.AppImage
+
+# Environment & secrets
 .env
+.env.local
+.env.*.local
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+
+# Test artifacts
 /test-results/
 /playwright-report/
