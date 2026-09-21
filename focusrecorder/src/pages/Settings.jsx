@@ -92,15 +92,31 @@ function Settings() {
   useEffect(() => {
     async function enumerate() {
       try {
-        if (!navigator.mediaDevices) {
-          throw new Error("MediaDevices API not available (requires HTTPS)");
+        if (typeof window !== "undefined" && window.isSecureContext === false) {
+          setDevError("Camera and microphone require a secure context (HTTPS or localhost).");
+          return;
         }
-        
-        // Brief getUserMedia so the browser reveals real device labels
-        const s = await navigator.mediaDevices
-          .getUserMedia({ audio: true, video: true })
-          .catch(() => null);
-        if (s) s.getTracks().forEach((t) => t.stop());
+        if (!navigator?.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          setDevError("MediaDevices API not available in this browser or requires HTTPS.");
+          return;
+        }
+
+        // Request camera and microphone permissions independently so one failure does not block the other
+        if (navigator.mediaDevices.getUserMedia) {
+          try {
+            const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            camStream.getTracks().forEach((t) => t.stop());
+          } catch (camErr) {
+            console.warn("[FocusRecorder] Settings camera prompt warning:", camErr.name || camErr.message);
+          }
+
+          try {
+            const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            micStream.getTracks().forEach((t) => t.stop());
+          } catch (micErr) {
+            console.warn("[FocusRecorder] Settings microphone prompt warning:", micErr.name || micErr.message);
+          }
+        }
 
         const devices = await navigator.mediaDevices.enumerateDevices();
 
@@ -114,14 +130,39 @@ function Settings() {
 
         setMics(foundMics);
         setWebcams(foundCams);
-        setDevError(""); // clear any previous error
-      } catch {
+
+        if (foundMics.length === 0 && foundCams.length === 0) {
+          setDevError("No microphone or camera devices detected on this computer.");
+        } else {
+          setDevError("");
+        }
+
+        // Auto-heal stale device IDs from other laptops or unplugged USB webcams
+        setSettings((prev) => {
+          let updated = false;
+          const next = { ...prev };
+          if (prev.webcamId && !foundCams.some((c) => c.id === prev.webcamId)) {
+            next.webcamId = "";
+            updated = true;
+          }
+          if (prev.microphoneId && !foundMics.some((m) => m.id === prev.microphoneId)) {
+            next.microphoneId = "";
+            updated = true;
+          }
+          if (updated) {
+            saveSettings(next);
+            return next;
+          }
+          return prev;
+        });
+      } catch (err) {
+        console.error("[FocusRecorder] Device enumeration error:", err);
         setDevError("Unable to detect microphone or webcam.");
       }
     }
     enumerate();
 
-    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    if (navigator?.mediaDevices?.addEventListener) {
       navigator.mediaDevices.addEventListener("devicechange", enumerate);
       return () => navigator.mediaDevices.removeEventListener("devicechange", enumerate);
     }

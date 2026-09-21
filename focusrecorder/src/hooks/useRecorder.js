@@ -653,25 +653,90 @@ export function useRecorder() {
     }
   }, [stopTimer, teardownAllStreams]);
 
+  // ── Camera error helper ────────────────────────────────────────────────────
+  const formatCameraError = (err) => {
+    if (!err) return "Camera error occurred.";
+    if (err.message === "SECURE_CONTEXT_REQUIRED" || err.message === "MEDIA_DEVICES_UNSUPPORTED") {
+      return "Camera requires a secure connection (HTTPS or localhost). Please open FocusRecorder via HTTPS.";
+    }
+    const name = err.name || "";
+    if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+      return "Camera permission denied. Please allow camera access in your browser address bar and system settings.";
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      return "No camera found. Please connect a built-in or USB webcam and ensure it is enabled.";
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return "Camera is already in use by another application (e.g., Zoom, Teams, or another browser tab).";
+    }
+    if (name === "OverconstrainedError") {
+      return "Camera does not support the requested video settings. Please try again.";
+    }
+    if (name === "AbortError") {
+      return "Camera access request was aborted. Please try again.";
+    }
+    return `Camera error: ${err.message || name || "Unable to start webcam"}`;
+  };
+
   // ── Webcam startup ────────────────────────────────────────────────────────
   const startCamStream = useCallback(async () => {
-    const vid = camDeviceIdRef.current;
-    const mic = micDeviceIdRef.current;
+    if (typeof window !== "undefined" && window.isSecureContext === false) {
+      throw new Error("SECURE_CONTEXT_REQUIRED");
+    }
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      throw new Error("MEDIA_DEVICES_UNSUPPORTED");
+    }
+
+    const preferredId = camDeviceIdRef.current;
     const targetFps = fpsRef.current || 30;
-    const audioCon = mic ? { deviceId: { exact: mic } } : true;
+
+    // Check if preferredId actually exists on this laptop
+    let verifiedCamId = null;
+    try {
+      if (navigator.mediaDevices.enumerateDevices) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === "videoinput");
+        if (videoDevices.length > 0) {
+          const found = preferredId ? videoDevices.find(d => d.deviceId === preferredId) : null;
+          if (found) {
+            verifiedCamId = found.deviceId;
+          }
+        }
+      }
+    } catch (enumErr) {
+      console.warn("[FocusRecorder] enumerateDevices warning:", enumErr);
+    }
 
     const tryGet = async (constraints) => navigator.mediaDevices.getUserMedia(constraints);
 
+    // Tier 1: Try with ideal resolution (1280x720) and ideal framerate
     try {
-      return await tryGet({
-        video: vid
-          ? { deviceId: { ideal: vid }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: targetFps } }
-          : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: targetFps }, facingMode: "user" },
-        audio: audioCon,
-      });
-    } catch {
-      return await tryGet({ video: true, audio: true }).catch(() => tryGet({ video: true }));
+      const videoCon = verifiedCamId
+        ? { deviceId: { ideal: verifiedCamId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: targetFps } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: targetFps }, facingMode: "user" };
+      return await tryGet({ video: videoCon, audio: false });
+    } catch (tier1Err) {
+      console.warn("[FocusRecorder] Tier 1 camera request failed:", tier1Err.name || tier1Err.message);
+      if (tier1Err.name === "NotAllowedError" || tier1Err.name === "NotReadableError") {
+        throw tier1Err;
+      }
     }
+
+    // Tier 2: Try with verified deviceId only (relaxed constraints)
+    try {
+      const videoCon = verifiedCamId
+        ? { deviceId: { ideal: verifiedCamId } }
+        : true;
+      return await tryGet({ video: videoCon, audio: false });
+    } catch (tier2Err) {
+      console.warn("[FocusRecorder] Tier 2 camera request failed:", tier2Err.name || tier2Err.message);
+      if (tier2Err.name === "NotAllowedError" || tier2Err.name === "NotReadableError") {
+        throw tier2Err;
+      }
+    }
+
+    // Tier 3: Ultimate fallback — plain video: true without any deviceId or resolution constraints
+    return await tryGet({ video: true, audio: false });
   }, []);
 
   const attachAndWatchCamRef = useRef(null);
@@ -709,9 +774,7 @@ export function useRecorder() {
           setCamOn(false);
           Promise.resolve().then(() => setCamReady(true));
           resolveInit();
-          setError(err.name === "NotAllowedError"
-            ? "Camera permission denied. Allow access and try again."
-            : `Camera error: ${err.message}`);
+          setError(formatCameraError(err));
         });
     } else {
       if (camStreamRef.current) {
@@ -843,9 +906,15 @@ export function useRecorder() {
         } else {
           try {
             const micCon = micDeviceIdRef.current
-              ? { audio: { deviceId: { exact: micDeviceIdRef.current } }, video: false }
+              ? { audio: { deviceId: { ideal: micDeviceIdRef.current } }, video: false }
               : { audio: true, video: false };
-            const micStream = await navigator.mediaDevices.getUserMedia(micCon);
+            let micStream;
+            try {
+              micStream = await navigator.mediaDevices.getUserMedia(micCon);
+            } catch {
+              // Fallback to default audio if specific micDeviceId is unavailable
+              micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            }
             micStreamRef.current = micStream;
             micAudioTracks = micStream.getAudioTracks();
           } catch (micErr) {
